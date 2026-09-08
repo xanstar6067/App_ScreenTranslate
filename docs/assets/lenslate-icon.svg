@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="432" height="432" viewBox="0 0 108 108">
+<defs><clipPath id="rounded"><rect width="108" height="108" rx="24"/></clipPath></defs>
+<g clip-path="url(#rounded)">
+<path fill="#102832" d="M0 0h108v108H0z"/><path fill="#193C43" d="M108 0v108H0z"/>
+<g fill="none" stroke-linecap="round" stroke-linejoin="round">
+<path stroke="#67E8C4" stroke-width="4" d="M39 28H29V39M69 28H79V39M79 69V79H69M39 79H29V69"/>
+<path stroke="#fff" stroke-width="3.5" d="M36 61L45 39L54 61M39 54H51"/>
+<path stroke="#67E8C4" stroke-width="3" d="M58 44H73M65 40V44M70 44Q68 56 58 61M60 49Q64 56 73 61M44 69H65M61 65L65 69L61 73"/>
+</g></g></svg>

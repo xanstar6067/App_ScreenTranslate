@@ -1,0 +1,48 @@
+package com.adam.app_screentranslate.model
+
+import kotlin.math.max
+import kotlin.math.min
+
+data class Box(val left: Float, val top: Float, val right: Float, val bottom: Float) {
+    val width get() = (right - left).coerceAtLeast(1f)
+    val height get() = (bottom - top).coerceAtLeast(1f)
+    val area get() = width * height
+    fun union(other: Box) = Box(min(left, other.left), min(top, other.top), max(right, other.right), max(bottom, other.bottom))
+    fun intersection(other: Box): Float = (min(right, other.right) - max(left, other.left)).coerceAtLeast(0f) *
+        (min(bottom, other.bottom) - max(top, other.top)).coerceAtLeast(0f)
+}
+enum class TextScript { LATIN, JAPANESE, KOREAN, MIXED, UNKNOWN }
+enum class MergeMode(val label: String, val gap: Float) { CAUTIOUS("Осторожное", .35f), NORMAL("Нормальное", .65f), AGGRESSIVE("Агрессивное", 1f) }
+enum class ProviderMode(val label: String) { AUTO("Автоматически"), GOOGLE("Google"), YANDEX("Yandex") }
+enum class BackgroundStyle(val label: String) { AUTO("Автоматический контраст"), DARK("Тёмный"), LIGHT("Светлый") }
+enum class ButtonSize(val label: String, val dp: Int) { SMALL("Маленький", 44), MEDIUM("Средний", 56), LARGE("Большой", 68) }
+enum class SessionPhase { OFF, STARTING, ACTIVE, ERROR }
+enum class ControlState { READY, PROCESSING, TRANSLATED }
+data class SessionState(val phase: SessionPhase = SessionPhase.OFF, val message: String = "", val control: ControlState = ControlState.READY)
+data class OcrElement(val text: String, val box: Box)
+data class OcrLine(val text: String, val box: Box, val elements: List<OcrElement> = emptyList(), val angle: Float = 0f)
+data class ScreenTextBlock(
+    val id: Long, val originalText: String, val boundingBox: Box,
+    val lines: List<OcrLine> = emptyList(), val detectedLanguage: String? = null,
+    val script: TextScript = TextScript.UNKNOWN, val confidence: Float? = null,
+    val translatedText: String? = null, val backgroundLuminance: Float = .5f
+)
+data class TranslationRequest(val id: Long, val text: String, val source: String, val target: String)
+data class TranslationResult(val id: Long, val text: String, val detectedLanguage: String?, val provider: String)
+data class AppSettings(
+    val target: String = "ru", val source: String = "auto", val provider: ProviderMode = ProviderMode.AUTO,
+    val merge: MergeMode = MergeMode.NORMAL, val background: BackgroundStyle = BackgroundStyle.AUTO,
+    val opacity: Float = .9f, val textScale: Float = 1f, val buttonSize: ButtonSize = ButtonSize.MEDIUM,
+    val cacheEnabled: Boolean = true
+)
+object Languages {
+    // Curated shared target languages; source OCR is intentionally narrower.
+    val targets = linkedMapOf("ru" to "Русский", "en" to "Английский", "ja" to "Японский", "ko" to "Корейский",
+        "de" to "Немецкий", "fr" to "Французский", "es" to "Испанский", "it" to "Итальянский",
+        "pt" to "Португальский", "uk" to "Украинский", "pl" to "Польский", "tr" to "Турецкий",
+        "zh" to "Китайский", "ar" to "Арабский", "hi" to "Хинди", "nl" to "Нидерландский",
+        "sv" to "Шведский", "cs" to "Чешский", "fi" to "Финский", "id" to "Индонезийский")
+    val sources = linkedMapOf("auto" to "Авто / смешанный", "en" to "Английский", "ja" to "Японский", "ko" to "Корейский",
+        "de" to "Немецкий", "fr" to "Французский", "es" to "Испанский", "it" to "Итальянский", "pt" to "Португальский",
+        "pl" to "Польский", "tr" to "Турецкий", "nl" to "Нидерландский")
+}
