@@ -13,8 +13,8 @@ android {
         applicationId = "com.adam.app_screentranslate"
         minSdk = 26
         targetSdk = 36
-        versionCode = 1
-        versionName = "0.1.0"
+        versionCode = 2
+        versionName = "0.2.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
@@ -36,6 +36,7 @@ android {
 }
 
 dependencies {
+    implementation("cz.adaptech.tesseract4android:tesseract4android:4.9.0")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.10.2")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-play-services:1.10.2")
     implementation("com.google.mlkit:text-recognition:16.0.1")

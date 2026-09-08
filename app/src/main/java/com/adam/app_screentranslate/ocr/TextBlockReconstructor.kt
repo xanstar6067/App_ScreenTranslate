@@ -13,8 +13,10 @@ object ScriptDetector {
         val latin = text.any { it in 'A'..'Z' || it in 'a'..'z' || it in '\u00C0'..'\u024F' }
         val japanese = text.any { it in '\u3040'..'\u30FF' || it in '\u3400'..'\u9FFF' }
         val korean = text.any { it in '\uAC00'..'\uD7AF' || it in '\u1100'..'\u11FF' || it in '\u3130'..'\u318F' }
+        val cyrillic = text.any { it in '\u0400'..'\u052F' }
         return when {
-            listOf(latin, japanese, korean).count { it } > 1 -> TextScript.MIXED
+            listOf(latin, japanese, korean, cyrillic).count { it } > 1 -> TextScript.MIXED
+            cyrillic -> TextScript.CYRILLIC
             japanese -> TextScript.JAPANESE
             korean -> TextScript.KOREAN
             latin -> TextScript.LATIN
@@ -25,9 +27,16 @@ object ScriptDetector {
 
 class TextBlockReconstructor {
     fun reconstruct(input: List<ScreenTextBlock>, mode: MergeMode): List<ScreenTextBlock> {
-        // Prefer script-specific results over a Latin model's guesses at CJK glyphs.
+        // Arbitrate at LINE level: different models often return different paragraph boundaries.
         val selected = mutableListOf<ScreenTextBlock>()
-        for (block in input.flatMap { splitObviousControls(it) }.filter { it.originalText.isNotBlank() }.sortedByDescending { quality(it) }) {
+        val candidates = input.flatMap { block ->
+            if (block.lines.isEmpty()) listOf(block) else block.lines.map { line ->
+                block.copy(originalText = line.text, boundingBox = line.box, lines = listOf(line),
+                    confidence = line.confidence ?: block.confidence, script = ScriptDetector.detect(line.text))
+            }
+        }
+        for (block in candidates.filter { it.originalText.any(Char::isLetter) && (it.confidence ?: 1f) >= .55f }
+            .sortedByDescending { quality(it) }) {
             if (selected.none { duplicate(it, block) }) selected += block
         }
         val result = selected.sortedWith(compareBy({ it.boundingBox.top }, { it.boundingBox.left })).toMutableList()
@@ -70,8 +79,11 @@ class TextBlockReconstructor {
     }
 
     private fun quality(b: ScreenTextBlock): Float {
-        val scriptBonus = when (b.script) { TextScript.JAPANESE, TextScript.KOREAN, TextScript.MIXED -> 20f; else -> 0f }
-        return scriptBonus + (b.confidence ?: .5f) * 10 + ln(b.originalText.length.coerceAtLeast(1).toFloat())
+        val letters = b.originalText.count(Char::isLetter).coerceAtLeast(1)
+        val cjk = b.originalText.count { it in '\u3040'..'\u9FFF' || it in '\uAC00'..'\uD7AF' }
+        val strayScriptPenalty = if (cjk in 1..2 && cjk.toFloat()/letters < .25f) .12f else 0f
+        // Confidence is model evidence; a CJK character alone is never evidence of correctness.
+        return (b.confidence ?: .65f) - strayScriptPenalty
     }
     private fun duplicate(a: ScreenTextBlock, b: ScreenTextBlock): Boolean {
         val overlap = a.boundingBox.intersection(b.boundingBox)
@@ -79,7 +91,8 @@ class TextBlockReconstructor {
         val iou = overlap / (a.boundingBox.area + b.boundingBox.area - overlap)
         val x = TextNormalizer.normalize(a.originalText).lowercase()
         val y = TextNormalizer.normalize(b.originalText).lowercase()
-        return (iou > .55f) || (containment > .8f && (x.contains(y) || y.contains(x))) ||
+        return (iou > .45f) || (containment > .75f && min(a.boundingBox.height, b.boundingBox.height) / max(a.boundingBox.height, b.boundingBox.height) > .6f) ||
+            (containment > .8f && (x.contains(y) || y.contains(x))) ||
             (containment > .65f && similarity(x, y) > .65f)
     }
     private fun similarity(a: String, b: String): Float {

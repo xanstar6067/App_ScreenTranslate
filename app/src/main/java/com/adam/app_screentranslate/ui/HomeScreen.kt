@@ -49,7 +49,7 @@ fun HomeScreen(
                     Text("Понимайте любой экран", fontSize = 12.sp, color = Muted)
                 }
                 Spacer(Modifier.weight(1f))
-                Text("MVP 0.1", color = Mint, fontSize = 10.sp,
+                Text("MVP 0.2", color = Mint, fontSize = 10.sp,
                     modifier = Modifier.clip(RoundedCornerShape(8.dp)).background(Mint.copy(alpha = .1f)).padding(8.dp))
             }
             Spacer(Modifier.height(26.dp))
@@ -133,9 +133,17 @@ fun HomeScreen(
                     Text("Нормальное объединение сохраняет абзацы. Осторожное подходит для меню, агрессивное — для длинных диалогов.",
                         color = Muted, fontSize = 12.sp)
                     Spacer(Modifier.height(12.dp))
-                    Text(if (settings.source == "auto") "Смешанное распознавание включено: Latin + Japanese + Korean"
+                    Text(if (settings.source == "auto") "Локальные модели: Latin + Japanese + Korean + Русский"
                         else "Модели выбираются по языку оригинала. Latin остаётся доступным для имён и интерфейса.",
                         color = Mint, fontSize = 12.sp)
+                    Spacer(Modifier.height(12.dp))
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Column(Modifier.weight(1f)) {
+                            Text("Проверка распознавания", fontWeight = FontWeight.Medium)
+                            Text("Показать исходный OCR без перевода и сети", color = Muted, fontSize = 11.sp)
+                        }
+                        Switch(checked = settings.ocrPreview, onCheckedChange = { onSettings(settings.copy(ocrPreview = it)) })
+                    }
                 }
                 Heading("ПЕРЕВОД ПОВЕРХ ЭКРАНА")
                 Section {
@@ -149,6 +157,9 @@ fun HomeScreen(
                     Text("Размер плавающей кнопки", fontWeight = FontWeight.Medium)
                     Spacer(Modifier.height(10.dp))
                     Options(ButtonSize.entries, settings.buttonSize, { it.label }) { onSettings(settings.copy(buttonSize = it)) }
+                    Spacer(Modifier.height(18.dp))
+                    SliderSetting("Непрозрачность кнопки", settings.buttonOpacity, .2f..1f) { onSettings(settings.copy(buttonOpacity = it)) }
+                    Text("20 % — почти прозрачная, 100 % — непрозрачная", color = Muted, fontSize = 11.sp)
                 }
                 Heading("ЛОКАЛЬНЫЙ КЭШ")
                 Section {

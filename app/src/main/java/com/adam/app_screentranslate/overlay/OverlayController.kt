@@ -50,6 +50,7 @@ class OverlayController(
     }
     fun configure(value: AppSettings) {
         config = value; size = ScreenCaptureManager.screenSize(context)
+        controlParams.alpha = value.buttonOpacity.coerceIn(.2f, 1f)
         val diameter = (value.buttonSize.dp*density).roundToInt()
         controlParams.width = diameter; controlParams.height = diameter
         val position = settings.position(size.first > size.second)

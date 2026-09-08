@@ -89,12 +89,16 @@ class TranslationService : Service() {
                 val blocks = try {
                     withContext(Dispatchers.Default) {
                         if (ScreenCaptureManager.isBlank(bitmap)) throw CaptureUnavailable()
-                        OCRManager().use { it.recognize(bitmap, settings.source, settings.merge) }
+                        OCRManager(this@TranslationService).use { it.recognize(bitmap, settings.source, settings.merge) }
                     }
                 } finally { bitmap.recycle() }
                 ensureActive()
                 if (blocks.isEmpty()) {
                     notice("Текст на экране не найден")
+                } else if (settings.ocrPreview) {
+                    visible += blocks.map { it.copy(translatedText = it.originalText) }
+                    overlay?.showTranslations(visible)
+                    notice("Проверка OCR: распознанный текст без отправки переводчику")
                 } else {
                     val errors = translations.translate(blocks, settings) { block ->
                         withContext(Dispatchers.Main.immediate) {
@@ -106,6 +110,7 @@ class TranslationService : Service() {
                     }
                     if (errors > 0) notice(if (visible.isEmpty()) "Перевод недоступен. Проверьте сеть или смените сервис."
                         else "Часть блоков не переведена: $errors")
+                    else if (visible.isEmpty()) notice("Текст уже на выбранном языке")
                 }
             } catch (e: CancellationException) { throw e }
             catch (_: CaptureUnavailable) { notice("Не удалось получить изображение. Возможно, приложение запрещает захват содержимого.") }

@@ -1,6 +1,7 @@
 package com.adam.app_screentranslate.ocr
 
 import android.graphics.Bitmap
+import android.content.Context
 import com.adam.app_screentranslate.model.*
 import com.google.mlkit.vision.common.InputImage
 import com.google.mlkit.vision.text.TextRecognition
@@ -12,7 +13,7 @@ import com.google.mlkit.nl.languageid.LanguageIdentification
 import kotlinx.coroutines.*
 import kotlinx.coroutines.tasks.await
 
-class OCRManager : AutoCloseable {
+class OCRManager(private val context: Context) : AutoCloseable {
     private val latin = TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS)
     private val japanese = TextRecognition.getClient(JapaneseTextRecognizerOptions.Builder().build())
     private val korean = TextRecognition.getClient(KoreanTextRecognizerOptions.Builder().build())
@@ -36,19 +37,29 @@ class OCRManager : AutoCloseable {
                                 OcrLine(l.text, Box(r.left.toFloat(), r.top.toFloat(), r.right.toFloat(), r.bottom.toFloat()),
                                     l.elements.mapNotNull { e -> e.boundingBox?.let {
                                         OcrElement(e.text, Box(it.left.toFloat(), it.top.toFloat(), it.right.toFloat(), it.bottom.toFloat()))
-                                    } }, l.angle)
+                                    } }, l.angle, l.confidence)
                             }
                             val text = TextBlockReconstructor.joinLines(lines.map { it.text }).ifBlank { b.text }
                             ScreenTextBlock(0, text, Box(rect.left.toFloat(), rect.top.toFloat(), rect.right.toFloat(), rect.bottom.toFloat()),
-                                lines = lines, script = ScriptDetector.detect(text))
+                                lines = lines, script = ScriptDetector.detect(text),
+                                confidence = lines.mapNotNull { it.confidence }.average().takeUnless { it.isNaN() }?.toFloat())
                         }
                     } catch (e: Exception) { emptyList() }
                 } }.awaitAll().flatten()
             }
         }
         ensureActive()
-        TextBlockReconstructor().reconstruct(raw, mode).map { block ->
+        val russian = if (source == "auto" || source == "ru") CyrillicRecognizer(context).recognize(bitmap) else emptyList()
+        ensureActive()
+        // An independently recognized Cyrillic line must veto Latin look-alike guesses in that region.
+        val supported = raw.filter { candidate -> russian.none { ru ->
+            ru.boundingBox.intersection(candidate.boundingBox) / candidate.boundingBox.area > .7f &&
+                (ru.confidence ?: 0f) >= .75f
+        } } + russian
+        TextBlockReconstructor().reconstruct(supported, mode).map { block ->
             val resolved = when (block.script) {
+                TextScript.CYRILLIC -> "ru"
+                TextScript.MIXED if block.detectedLanguage == "ru" -> "ru"
                 TextScript.MIXED -> "auto"
                 TextScript.JAPANESE -> "ja"
                 TextScript.KOREAN -> "ko"

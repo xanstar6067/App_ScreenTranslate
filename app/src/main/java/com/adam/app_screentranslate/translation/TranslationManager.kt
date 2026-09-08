@@ -22,7 +22,8 @@ class TranslationManager(
             ProviderMode.GOOGLE -> providers.take(1)
             ProviderMode.YANDEX -> providers.takeLast(1)
         }
-        val requests = blocks.map { TranslationRequest(it.id, TextNormalizer.normalize(it.originalText), it.detectedLanguage ?: "auto", settings.target) }
+        val requests = blocks.filter { it.detectedLanguage != settings.target }
+            .map { TranslationRequest(it.id, TextNormalizer.normalize(it.originalText), it.detectedLanguage ?: "auto", settings.target) }
         val grouped = requests.filter { it.text.isNotEmpty() }.groupBy { "${it.source}\u0000${it.target}\u0000${it.text}" }
         val waiting = mutableListOf<Pair<List<TranslationRequest>, CompletableDeferred<TranslationResult?>>>()
         val owned = mutableListOf<Pair<String, TranslationRequest>>()
@@ -47,7 +48,6 @@ class TranslationManager(
             val pending = mutableListOf<TranslationRequest>()
             for ((key, req) in owned) {
                 var hit: TranslationResult? = null
-                if (req.source == req.target) hit = TranslationResult(req.id, req.text, req.source, available.first().id)
                 if (settings.cacheEnabled && hit == null) {
                     for (provider in available) {
                         hit = try { cache.get(provider.id, req) }
