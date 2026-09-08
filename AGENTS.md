@@ -40,7 +40,7 @@ MVP 0.1: Kotlin, Jetpack Compose Material 3, Coroutines, Android API 26–36.
 3. MediaProjection создаётся только после системного согласия, внутри уже запущенного foreground service. Intent согласия нельзя сохранять или повторно использовать.
 4. На одну сессию ровно один createVirtualDisplay. Повороты используют resize и замену Surface. START_NOT_STICKY; после завершения/перезапуска требуется новое согласие.
 5. Скрывать кнопку до получения нового кадра. Старые результаты после поворота/изменения настроек/остановки отбрасывать по generation.
-6. Переводы рисуются в **одном** TYPE_APPLICATION_OVERLAY окне с FLAG_NOT_TOUCHABLE и FLAG_NOT_FOCUSABLE. На Android 12+ alpha самого WindowManager.LayoutParams не выше InputManager.maximumObscuringOpacityForTouch. Непрозрачность отдельных пикселей не заменяет это требование.
+6. Переводы рисуются в **одном** TYPE_APPLICATION_OVERLAY окне с FLAG_NOT_TOUCHABLE и FLAG_NOT_FOCUSABLE. Так как окно не участвует в touch path, его alpha держится 1.0; настройка прозрачности управляет только фоном карточек. Управляющее окно кнопки отдельно принимает касания и не меняет системный порог obscuring opacity.
 7. Управляющее окно принимает касания только в пределах кнопки. READY → PROCESSING → TRANSLATED; повторная обработка игнорируется; tap в TRANSLATED очищает.
 8. Не проглатывать CancellationException в retry/fallback. Ожидающие одинаковый запрос должны завершаться и при отмене владельца; cleanup выполнять в NonCancellable.
 9. Ключ кэша: provider + source + target + нормализованный исходный текст. Сохранять регистр и пунктуацию. Кэш и настройки не участвуют в Android backup/device-transfer.

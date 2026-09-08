@@ -3,7 +3,6 @@ package com.adam.app_screentranslate.overlay
 import android.annotation.SuppressLint
 import android.content.Context
 import android.graphics.*
-import android.hardware.input.InputManager
 import android.os.Build
 import android.view.*
 import com.adam.app_screentranslate.capture.ScreenCaptureManager
@@ -26,9 +25,11 @@ class OverlayController(
     private val controlParams = params(56, 56, false)
     private val translationParams = params(-1, -1, true)
     init {
-        // Android 12+ checks WINDOW alpha, not per-pixel alpha. One translation window only.
-        translationParams.alpha = if (Build.VERSION.SDK_INT >= 31)
-            context.getSystemService(InputManager::class.java).maximumObscuringOpacityForTouch.coerceAtMost(.8f) else 1f
+        // Translation is a dedicated FLAG_NOT_TOUCHABLE window. It does not participate in
+        // Android's obscuring-opacity touch path, so keep the window opaque and let the cards
+        // themselves control their visual alpha. This prevents source glyphs from bleeding
+        // through the translation while touches still go to the app underneath.
+        translationParams.alpha = 1f
         installGestures()
     }
     // Capture coordinates are physical pixels from the left edge, regardless of locale.
