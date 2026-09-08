@@ -48,10 +48,11 @@ class OverlayRenderer(context: Context) : View(context) {
             while (textLayout.height > source.height && size > minSize) {
                 size = (size - density).coerceAtLeast(minSize); textLayout = layout()
             }
-            var h = textLayout.height + padding * 2
+            // A short translation must still cover the complete original paragraph.
+            var h = maxOf(textLayout.height.toFloat(), source.height) + padding * 2
             // Prefer shrinking before moving expanded translations.
             while (h > screenHeight && size > 8 * density) {
-                size -= density; textLayout = layout(); h = textLayout.height + padding*2
+                size -= density; textLayout = layout(); h = maxOf(textLayout.height.toFloat(), source.height) + padding*2
             }
             var y = (source.top - padding).coerceIn(0f, (screenHeight-h).coerceAtLeast(0f))
             var box = RectF(x, y, x+w, y+h)
@@ -86,6 +87,11 @@ class OverlayRenderer(context: Context) : View(context) {
     }
     override fun onDraw(canvas: Canvas) {
         super.onDraw(canvas)
+        // OCR coordinates refer to the physical display; window origin can be inset by the OS.
+        val origin = IntArray(2)
+        getLocationOnScreen(origin)
+        val saved = canvas.save()
+        canvas.translate(-origin[0].toFloat(), -origin[1].toFloat())
         val padding = 4*density
         for (label in labels) {
             background.color = if (label.dark) Color.rgb(15, 23, 36) else Color.rgb(246, 249, 251)
@@ -97,5 +103,6 @@ class OverlayRenderer(context: Context) : View(context) {
             label.layout.draw(canvas)
             canvas.restore()
         }
+        canvas.restoreToCount(saved)
     }
 }

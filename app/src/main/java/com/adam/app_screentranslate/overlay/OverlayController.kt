@@ -3,6 +3,7 @@ package com.adam.app_screentranslate.overlay
 import android.annotation.SuppressLint
 import android.content.Context
 import android.graphics.*
+import android.hardware.input.InputManager
 import android.os.Build
 import android.view.*
 import com.adam.app_screentranslate.capture.ScreenCaptureManager
@@ -25,11 +26,9 @@ class OverlayController(
     private val controlParams = params(56, 56, false)
     private val translationParams = params(-1, -1, true)
     init {
-        // Translation is a dedicated FLAG_NOT_TOUCHABLE window. It does not participate in
-        // Android's obscuring-opacity touch path, so keep the window opaque and let the cards
-        // themselves control their visual alpha. This prevents source glyphs from bleeding
-        // through the translation while touches still go to the app underneath.
-        translationParams.alpha = 1f
+        // NOT_TOUCHABLE windows still count as occluding windows on Android 12+.
+        translationParams.alpha = if (Build.VERSION.SDK_INT >= 31)
+            context.getSystemService(InputManager::class.java).maximumObscuringOpacityForTouch.coerceAtMost(.8f) else 1f
         installGestures()
     }
     // Capture coordinates are physical pixels from the left edge, regardless of locale.
@@ -51,7 +50,10 @@ class OverlayController(
     }
     fun configure(value: AppSettings) {
         config = value; size = ScreenCaptureManager.screenSize(context)
-        controlParams.alpha = value.buttonOpacity.coerceIn(.2f, 1f)
+        // Keep the input surface stable; transparency is purely a drawing property.
+        controlParams.alpha = 1f
+        button.visualOpacity = value.buttonOpacity.coerceIn(.2f, 1f)
+        button.invalidate()
         val diameter = (value.buttonSize.dp*density).roundToInt()
         controlParams.width = diameter; controlParams.height = diameter
         val position = settings.position(size.first > size.second)
@@ -65,7 +67,14 @@ class OverlayController(
     fun hideControl() { button.visibility = View.INVISIBLE }
     fun showTranslations(blocks: List<ScreenTextBlock>) {
         translation.render(blocks, config, size.first, size.second)
-        if (!translationAttached) { wm.addView(translation, translationParams); translationAttached = true }
+        if (!translationAttached) {
+            wm.addView(translation, translationParams); translationAttached = true
+            // Keep the control above the translation window, including after each clear/show.
+            if (controlAttached) {
+                wm.removeViewImmediate(button)
+                wm.addView(button, controlParams)
+            }
+        }
     }
     fun clear() {
         if (translationAttached) { wm.removeViewImmediate(translation); translationAttached = false }
@@ -112,6 +121,7 @@ class OverlayController(
         if (controlAttached) { wm.removeViewImmediate(button); controlAttached = false }
     }
     private class ControlView(context: Context) : View(context) {
+        var visualOpacity = 1f
         var state = ControlState.READY
             set(value) {
                 field = value
@@ -123,6 +133,7 @@ class OverlayController(
             }
         private val paint = Paint(Paint.ANTI_ALIAS_FLAG)
         override fun onDraw(canvas: Canvas) {
+            val layer = canvas.saveLayerAlpha(0f, 0f, width.toFloat(), height.toFloat(), (visualOpacity * 255).roundToInt())
             val r = width/2f
             paint.style = Paint.Style.FILL; paint.color = Color.rgb(92, 237, 196)
             canvas.drawCircle(r, height/2f, r-2, paint)
@@ -145,6 +156,7 @@ class OverlayController(
                     postInvalidateOnAnimation()
                 }
             }
+            canvas.restoreToCount(layer)
         }
     }
 }
