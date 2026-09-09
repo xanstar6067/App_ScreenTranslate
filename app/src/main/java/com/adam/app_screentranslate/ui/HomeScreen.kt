@@ -30,7 +30,8 @@ private val Panel = Color(0xFF172733)
 fun HomeScreen(
     settings: AppSettings, session: SessionState, permissions: PermissionStatus, cache: TranslationCache,
     onSettings: (AppSettings) -> Unit, onToggle: (Boolean) -> Unit,
-    onOverlay: () -> Unit, onCapture: () -> Unit, onNotifications: () -> Unit, onRefresh: () -> Unit
+    onOverlay: () -> Unit, onCapture: () -> Unit, onNotifications: () -> Unit,
+    onBattery: () -> Unit, onRefresh: () -> Unit
 ) {
     var tab by rememberSaveable { mutableIntStateOf(0) }
     var chooser by remember { mutableStateOf<String?>(null) }
@@ -114,12 +115,16 @@ fun HomeScreen(
                     PermissionRow("Поверх приложений", permissions.overlay, "Разрешить", onOverlay)
                     PermissionRow("Захват экрана", session.phase == SessionPhase.ACTIVE, "Разрешить", onCapture)
                     PermissionRow("Уведомления", permissions.notifications, "Разрешить", onNotifications)
+                    PermissionRow("Работа при выключенном экране", permissions.battery, "Настроить", onBattery)
                     PermissionRow("OCR-модели в приложении", true)
                     PermissionRow("Интернет", permissions.network)
                     TextButton(onClick = { onRefresh(); scope.launch { stats = cache.stats() } }, contentPadding = PaddingValues(0.dp)) {
                         Text("Проверить снова", color = Mint)
                     }
                     Text("Для точного размещения перевода выберите весь экран в системном запросе.", color = Muted, fontSize = 11.sp)
+                    Spacer(Modifier.height(8.dp))
+                    Text("Без исключения из оптимизации батареи система выгружает переводчик, пока экран выключен. Оболочки Samsung и Xiaomi дополнительно держат собственные списки «спящих» приложений.",
+                        color = Muted, fontSize = 11.sp)
                 }
                 Heading("КАК ПОЛЬЗОВАТЬСЯ")
                 Section {

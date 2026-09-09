@@ -1,6 +1,7 @@
 package com.adam.app_screentranslate
 
 import android.Manifest
+import android.annotation.SuppressLint
 import android.app.Activity
 import android.content.Intent
 import android.content.pm.PackageManager
@@ -75,7 +76,8 @@ class MainActivity : ComponentActivity() {
                         if (Build.VERSION.SDK_INT >= 33 && ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED)
                             notifications.launch(Manifest.permission.POST_NOTIFICATIONS)
                         else startActivity(Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS).putExtra(Settings.EXTRA_APP_PACKAGE, packageName))
-                    }, onRefresh = { refresh++ })
+                    },
+                    onBattery = { openBatteryOptimization() }, onRefresh = { refresh++ })
             }
         }
         handleAction(intent)
@@ -125,12 +127,31 @@ class MainActivity : ComponentActivity() {
             else manager.createScreenCaptureIntent()
         projection.launch(intent)
     }
+    /**
+     * Battery optimization is what unloads the service while the screen is off. The direct request
+     * is the one tap the user needs; the settings list stays as the fallback for systems that
+     * refuse it, and for turning the exemption back off.
+     */
+    @SuppressLint("BatteryLife")
+    private fun openBatteryOptimization() {
+        val request = if (getSystemService(PowerManager::class.java).isIgnoringBatteryOptimizations(packageName))
+            Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS)
+        else Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS, Uri.parse("package:$packageName"))
+        val fallback = listOf(Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS),
+            Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:$packageName")))
+        for (intent in listOf(request) + fallback) {
+            if (runCatching { startActivity(intent) }.isSuccess) return
+        }
+        app.session.value = app.session.value.copy(
+            message = "Откройте системные настройки батареи и снимите ограничение для Lenslate вручную.")
+    }
     private fun readPermissions(): PermissionStatus {
         val connectivity = getSystemService(ConnectivityManager::class.java)
         val capabilities = connectivity.getNetworkCapabilities(connectivity.activeNetwork)
         return PermissionStatus(Settings.canDrawOverlays(this),
             androidx.core.app.NotificationManagerCompat.from(this).areNotificationsEnabled(),
-            capabilities?.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED) == true)
+            capabilities?.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED) == true,
+            getSystemService(PowerManager::class.java).isIgnoringBatteryOptimizations(packageName))
     }
 }
-data class PermissionStatus(val overlay: Boolean, val notifications: Boolean, val network: Boolean)
+data class PermissionStatus(val overlay: Boolean, val notifications: Boolean, val network: Boolean, val battery: Boolean)

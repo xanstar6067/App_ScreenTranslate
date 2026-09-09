@@ -13,7 +13,7 @@ MVP 0.1: Kotlin, Jetpack Compose Material 3, Coroutines, Android API 26–36.
 
 Основной код: `app/src/main/java/com/adam/app_screentranslate/`.
 
-- `MainActivity.kt`: Activity Result API, выдача overlay/notification/projection разрешений, Compose.
+- `MainActivity.kt`: Activity Result API, выдача overlay/notification/projection разрешений, переход к исключению из оптимизации батареи, Compose.
 - `TranslatorApp.kt`: контейнер настроек, SQLite-кэша и StateFlow состояния сессии; состояние захвата не сохраняется.
 - `model/Models.kt`: неизменяемые модели, Box в физических пикселях захвата, языки, состояния и настройки.
 - `ui/HomeScreen.kt`, `ui/theme/`: русский интерфейс, главный экран и настройки, тёмная тема с мятным акцентом.
