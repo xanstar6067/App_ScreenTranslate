@@ -6,6 +6,50 @@ import kotlin.math.*
 object TextNormalizer {
     fun normalize(text: String) = text.replace(Regex("[\\u200B-\\u200D\\uFEFF]"), "")
         .replace(Regex("[\\s\\u00A0]+"), " ").trim()
+
+    private val latinToCyrillic = mapOf(
+        'A' to '\u0410', 'B' to '\u0412', 'C' to '\u0421', 'E' to '\u0415', 'H' to '\u041D',
+        'K' to '\u041A', 'M' to '\u041C', 'O' to '\u041E', 'P' to '\u0420', 'T' to '\u0422',
+        'X' to '\u0425', 'Y' to '\u0423', 'a' to '\u0430', 'c' to '\u0441', 'e' to '\u0435',
+        'o' to '\u043E', 'p' to '\u0440', 'x' to '\u0445', 'y' to '\u0443')
+    private val cyrillicToLatin = latinToCyrillic.entries.associate { (latin, cyrillic) -> cyrillic to latin }
+    private val words = Regex("[\\p{L}\\p{M}\\p{Nd}]+")
+
+    /**
+     * A recognizer that runs Latin and Cyrillic together spells single words in both alphabets.
+     * Such a word matches no dictionary and reaches the translator as nonsense, so every look-alike
+     * letter is rewritten into the alphabet the rest of the word already uses.
+     */
+    fun harmonizeScript(text: String): String = words.replace(text) { match -> harmonizeWord(match.value) }
+
+    private fun harmonizeWord(token: String): String {
+        var cyrillic = 0
+        var latin = 0
+        for (c in token) when {
+            c in '\u0400'..'\u052F' -> cyrillic++
+            c in 'A'..'Z' || c in 'a'..'z' -> latin++
+        }
+        if (cyrillic == 0 || latin == 0) return token
+        val map = if (cyrillic >= latin) latinToCyrillic else cyrillicToLatin
+        val converted = token.map { map[it] ?: it }.joinToString("")
+        // A word that stays mixed was no look-alike; the original spelling is the safer answer.
+        val mixed = converted.any { it in '\u0400'..'\u052F' } &&
+            converted.any { it in 'A'..'Z' || it in 'a'..'z' }
+        return if (mixed) token else converted
+    }
+
+    /**
+     * Counters, timers and stat rows carry no language. Translating them wastes requests and fills
+     * the screen with cards that repeat the digits already visible underneath.
+     */
+    fun isTranslatable(text: String): Boolean {
+        val letters = text.count(Char::isLetter)
+        if (letters == 0) return false
+        // A single CJK glyph is a whole word.
+        if (text.any { it in '\u3040'..'\u9FFF' || it in '\uAC00'..'\uD7AF' }) return true
+        val dense = text.count { !it.isWhitespace() }.coerceAtLeast(1)
+        return letters >= 2 && letters.toFloat() / dense >= .25f
+    }
 }
 
 object ScriptDetector {
@@ -30,12 +74,16 @@ class TextBlockReconstructor {
         // Arbitrate at LINE level: different models often return different paragraph boundaries.
         val selected = mutableListOf<ScreenTextBlock>()
         val candidates = input.flatMap { block ->
-            if (block.lines.isEmpty()) listOf(block) else block.lines.map { line ->
-                block.copy(originalText = line.text, boundingBox = line.box, lines = listOf(line),
-                    confidence = line.confidence ?: block.confidence, script = ScriptDetector.detect(line.text))
+            if (block.lines.isEmpty()) {
+                val text = TextNormalizer.harmonizeScript(block.originalText)
+                listOf(block.copy(originalText = text, script = ScriptDetector.detect(text)))
+            } else block.lines.map { line ->
+                val text = TextNormalizer.harmonizeScript(line.text)
+                block.copy(originalText = text, boundingBox = line.box, lines = listOf(line),
+                    confidence = line.confidence ?: block.confidence, script = ScriptDetector.detect(text))
             }
         }
-        for (block in candidates.filter { it.originalText.any(Char::isLetter) && (it.confidence ?: 1f) >= .55f }
+        for (block in candidates.filter { TextNormalizer.isTranslatable(it.originalText) && (it.confidence ?: 1f) >= .55f }
             .sortedByDescending { quality(it) }) {
             if (selected.none { duplicate(it, block) }) selected += block
         }

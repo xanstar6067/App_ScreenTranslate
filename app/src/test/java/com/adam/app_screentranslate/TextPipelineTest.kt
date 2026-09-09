@@ -78,4 +78,26 @@ class TextPipelineTest {
     @Test fun escapesUserHtmlAsText() {
         assertEquals("&lt;script&gt; &amp; &quot;Hi&quot;", escapeHtml("<script> & \"Hi\""))
     }
+    @Test fun rewritesLookAlikeLettersIntoOneAlphabet() {
+        // Latin K and o inside a Russian word: the recognizer mixed alphabets, the game did not.
+        assertEquals("\u041A\u043E\u043C\u0430\u043D\u0434\u0430",
+            TextNormalizer.harmonizeScript("Ko\u043C\u0430\u043D\u0434\u0430"))
+        assertEquals("Sweep", TextNormalizer.harmonizeScript("Sweep"))
+        assertEquals("Lv. 160", TextNormalizer.harmonizeScript("Lv. 160"))
+        // Nothing to gain when the word stays mixed after the rewrite.
+        assertEquals("\u0431test", TextNormalizer.harmonizeScript("\u0431test"))
+    }
+    @Test fun countersAreNotSentToTheTranslator() {
+        assertFalse(TextNormalizer.isTranslatable("100,314/300"))
+        assertFalse(TextNormalizer.isTranslatable("992.34 M"))
+        assertFalse(TextNormalizer.isTranslatable("22.6%"))
+        assertTrue(TextNormalizer.isTranslatable("Lv. 160"))
+        assertTrue(TextNormalizer.isTranslatable("Sweep"))
+        assertTrue(TextNormalizer.isTranslatable("\u65E5"))
+    }
+    @Test fun dropsNumericHudRows() {
+        val result = TextBlockReconstructor().reconstruct(listOf(
+            block("Attack", 0f), block("11,503", 0f, x = 300f), block("22.6%", 26f, x = 300f)), MergeMode.NORMAL)
+        assertEquals(listOf("Attack"), result.map { it.originalText })
+    }
 }

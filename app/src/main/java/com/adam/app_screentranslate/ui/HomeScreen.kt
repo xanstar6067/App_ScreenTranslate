@@ -78,10 +78,16 @@ fun HomeScreen(
                                     ControlState.READY -> "Активен · готов к переводу"
                                     ControlState.PROCESSING -> "Распознаём и переводим…"
                                     ControlState.TRANSLATED -> "Перевод на экране"
+                                    ControlState.PAUSED -> "Захват остановлен"
                                 }
+                                SessionPhase.PAUSED -> "Пауза · нужно разрешить захват снова"
                                 SessionPhase.ERROR -> "Не удалось включить"
                             }
-                            Text(status, color = if (session.phase == SessionPhase.ACTIVE) Mint else Muted, fontSize = 13.sp)
+                            Text(status, color = when (session.phase) {
+                                SessionPhase.ACTIVE -> Mint
+                                SessionPhase.PAUSED -> Color(0xFFFFD39B)
+                                else -> Muted
+                            }, fontSize = 13.sp)
                         }
                         Switch(checked = session.phase in listOf(SessionPhase.ACTIVE, SessionPhase.STARTING),
                             enabled = session.phase != SessionPhase.STARTING, onCheckedChange = onToggle)

@@ -46,7 +46,17 @@ class OverlayController(
     }
     fun show() {
         configure(config)
-        if (!controlAttached) { wm.addView(button, controlParams); controlAttached = true }
+        ensureAttached()
+    }
+    /** Keyguard, display changes and OEM window cleanups can drop an overlay window silently. */
+    fun ensureAttached() {
+        if (controlAttached) {
+            // Updating a window the system already removed fails; only then is a new one needed.
+            if (runCatching { wm.updateViewLayout(button, controlParams) }.isSuccess) return
+            controlAttached = false
+            runCatching { wm.removeViewImmediate(button) }
+        }
+        runCatching { wm.addView(button, controlParams) }.onSuccess { controlAttached = true }
     }
     fun configure(value: AppSettings) {
         config = value; size = ScreenCaptureManager.screenSize(context)
@@ -60,7 +70,7 @@ class OverlayController(
         controlParams.x = (position.first*(size.first-diameter).coerceAtLeast(0)).roundToInt()
         controlParams.y = (position.second*(size.second-diameter).coerceAtLeast(0)).roundToInt()
         clamp()
-        if (controlAttached) wm.updateViewLayout(button, controlParams)
+        if (controlAttached) runCatching { wm.updateViewLayout(button, controlParams) }
     }
     fun onRotation() { clear(); configure(config) }
     fun state(state: ControlState) { button.state = state; button.visibility = View.VISIBLE; button.invalidate() }
@@ -71,13 +81,14 @@ class OverlayController(
             wm.addView(translation, translationParams); translationAttached = true
             // Keep the control above the translation window, including after each clear/show.
             if (controlAttached) {
-                wm.removeViewImmediate(button)
-                wm.addView(button, controlParams)
+                runCatching { wm.removeViewImmediate(button) }
+                controlAttached = false
+                ensureAttached()
             }
         }
     }
     fun clear() {
-        if (translationAttached) { wm.removeViewImmediate(translation); translationAttached = false }
+        if (translationAttached) { runCatching { wm.removeViewImmediate(translation) }; translationAttached = false }
     }
     private fun clamp() {
         controlParams.x = controlParams.x.coerceIn(0, (size.first-controlParams.width).coerceAtLeast(0))
@@ -118,7 +129,7 @@ class OverlayController(
     }
     override fun close() {
         clear()
-        if (controlAttached) { wm.removeViewImmediate(button); controlAttached = false }
+        if (controlAttached) { runCatching { wm.removeViewImmediate(button) }; controlAttached = false }
     }
     private class ControlView(context: Context) : View(context) {
         var visualOpacity = 1f
@@ -129,13 +140,15 @@ class OverlayController(
                     ControlState.READY -> "Перевести экран. Удерживайте для настроек"
                     ControlState.PROCESSING -> "Переводим экран"
                     ControlState.TRANSLATED -> "Очистить перевод"
+                    ControlState.PAUSED -> "Захват экрана остановлен. Нажмите, чтобы разрешить снова"
                 }
             }
         private val paint = Paint(Paint.ANTI_ALIAS_FLAG)
         override fun onDraw(canvas: Canvas) {
             val layer = canvas.saveLayerAlpha(0f, 0f, width.toFloat(), height.toFloat(), (visualOpacity * 255).roundToInt())
             val r = width/2f
-            paint.style = Paint.Style.FILL; paint.color = Color.rgb(92, 237, 196)
+            paint.style = Paint.Style.FILL
+            paint.color = if (state == ControlState.PAUSED) Color.rgb(255, 202, 124) else Color.rgb(92, 237, 196)
             canvas.drawCircle(r, height/2f, r-2, paint)
             paint.color = Color.rgb(10, 30, 39)
             when(state) {
@@ -148,6 +161,11 @@ class OverlayController(
                     paint.style = Paint.Style.STROKE; paint.strokeWidth = width*.06f; paint.strokeCap = Paint.Cap.ROUND
                     canvas.drawLine(width*.35f, height*.35f, width*.65f, height*.65f, paint)
                     canvas.drawLine(width*.65f, height*.35f, width*.35f, height*.65f, paint)
+                }
+                ControlState.PAUSED -> {
+                    paint.typeface = Typeface.create("sans-serif-black", Typeface.BOLD)
+                    paint.textSize = width * .46f; paint.textAlign = Paint.Align.CENTER
+                    canvas.drawText("!", r, height * .66f, paint)
                 }
                 ControlState.PROCESSING -> {
                     paint.style = Paint.Style.STROKE; paint.strokeWidth = width*.055f; paint.strokeCap = Paint.Cap.ROUND

@@ -24,6 +24,7 @@ class MainActivity : ComponentActivity() {
     private val app get() = application as TranslatorApp
     private var refresh by mutableIntStateOf(0)
     private var resumeEnable = false
+    private var resumingSession = false
     private val overlayPermission = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) {
         refresh++
         if (resumeEnable) {
@@ -44,7 +45,13 @@ class MainActivity : ComponentActivity() {
             } catch (_: Exception) {
                 app.session.value = SessionState(SessionPhase.ERROR, "Android не разрешил запуск. Попробуйте включить снова.")
             }
-        } else app.session.value = SessionState(SessionPhase.OFF, "Захват экрана не разрешён.")
+        } else {
+            // A running session that only lost its projection stays paused and reachable from the button.
+            app.session.value = SessionState(
+                if (resumingSession) SessionPhase.PAUSED else SessionPhase.OFF, "Захват экрана не разрешён.",
+                if (resumingSession) ControlState.PAUSED else ControlState.READY)
+        }
+        resumingSession = false
     }
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -71,8 +78,24 @@ class MainActivity : ComponentActivity() {
                     }, onRefresh = { refresh++ })
             }
         }
+        handleAction(intent)
+    }
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        handleAction(intent)
     }
     override fun onResume() { super.onResume(); refresh++ }
+    /** The overlay button and the paused notification ask for a new capture consent directly. */
+    private fun handleAction(intent: Intent?) {
+        if (intent?.action != TranslationService.ACTION_RESUME) return
+        // The consent is single use; the action must not fire again when the activity is recreated.
+        intent.action = null
+        resumingSession = true
+        app.session.value = app.session.value.copy(phase = SessionPhase.STARTING, message = "")
+        if (Settings.canDrawOverlays(this)) requestNotificationsThenCapture()
+        else { resumeEnable = true; openOverlayPermission() }
+    }
     override fun onSaveInstanceState(outState: Bundle) {
         outState.putBoolean("resumeEnable", resumeEnable)
         super.onSaveInstanceState(outState)

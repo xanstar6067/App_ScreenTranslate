@@ -16,8 +16,8 @@ enum class MergeMode(val label: String, val gap: Float) { CAUTIOUS("Осторо
 enum class ProviderMode(val label: String) { AUTO("Автоматически"), GOOGLE("Google"), YANDEX("Yandex") }
 enum class BackgroundStyle(val label: String) { AUTO("Автоматический контраст"), DARK("Тёмный"), LIGHT("Светлый") }
 enum class ButtonSize(val label: String, val dp: Int) { SMALL("Маленький", 44), MEDIUM("Средний", 56), LARGE("Большой", 68) }
-enum class SessionPhase { OFF, STARTING, ACTIVE, ERROR }
-enum class ControlState { READY, PROCESSING, TRANSLATED }
+enum class SessionPhase { OFF, STARTING, ACTIVE, PAUSED, ERROR }
+enum class ControlState { READY, PROCESSING, TRANSLATED, PAUSED }
 data class SessionState(val phase: SessionPhase = SessionPhase.OFF, val message: String = "", val control: ControlState = ControlState.READY)
 data class OcrElement(val text: String, val box: Box)
 data class OcrLine(val text: String, val box: Box, val elements: List<OcrElement> = emptyList(), val angle: Float = 0f, val confidence: Float? = null)
