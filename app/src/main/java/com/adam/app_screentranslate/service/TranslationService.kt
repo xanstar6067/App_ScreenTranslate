@@ -22,6 +22,8 @@ import com.adam.app_screentranslate.ocr.OCRManager
 import com.adam.app_screentranslate.overlay.OverlayController
 import com.adam.app_screentranslate.translation.TranslationManager
 import com.adam.app_screentranslate.translation.ai.AiTranslator
+import com.adam.app_screentranslate.translation.ai.GeminiClient
+import com.adam.app_screentranslate.translation.ai.XaiClient
 import kotlinx.coroutines.*
 
 class TranslationService : Service() {
@@ -43,7 +45,11 @@ class TranslationService : Service() {
     private var stopping = false
     private var screenEventsRegistered = false
     private val translations by lazy { TranslationManager(app.cache) }
-    private val aiTranslator by lazy { AiTranslator() }
+    /** One translator per provider, kept for the session: each engine remembers what it negotiated. */
+    private val aiTranslators = mutableMapOf<AiProvider, AiTranslator>()
+    private fun aiTranslator(provider: AiProvider) = aiTranslators.getOrPut(provider) {
+        AiTranslator(if (provider == AiProvider.GEMINI) GeminiClient() else XaiClient())
+    }
     private val screenEvents = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
             if (intent.action == Intent.ACTION_SCREEN_OFF) {
@@ -187,7 +193,7 @@ class TranslationService : Service() {
                     val errors = if (settings.mode == TranslationMode.AI) {
                         val ai = app.ai.settings.value
                         val token = withContext(Dispatchers.IO) { app.ai.token() }
-                        val outcome = aiTranslator.translate(blocks, settings, ai, token, app.cache, emit)
+                        val outcome = aiTranslator(ai.provider).translate(blocks, settings, ai, token, app.cache, emit)
                         aiReason = outcome.reason
                         val fallback = ai.fallback.provider()
                         when {

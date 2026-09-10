@@ -44,7 +44,7 @@ class AiTranslator(private val client: AiEngine = XaiClient()) {
             val fragments = try { request(token, ai.model, system, batch, source, target, ai.repair) }
             catch (e: CancellationException) { throw e }
             catch (e: AiFormatException) { failed += batch; reason = e.reason; continue }
-            catch (e: XaiException) { failed += batch; reason = e.reason; continue }
+            catch (e: AiHttpException) { failed += batch; reason = e.reason; continue }
             catch (_: IOException) { failed += batch; reason = "Сеть недоступна."; continue }
             val known = batch.associateBy { it.id }
             for (fragment in fragments) {

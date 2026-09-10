@@ -35,6 +35,24 @@ object AiProtocol {
             .put("properties", JSONObject().put("fragments", JSONObject().put("type", "array").put("items", fragment)))
     }
 
+    /**
+     * The same contract in the dialect Gemini speaks: an OpenAPI 3.0 subset with upper-case type
+     * names and no `additionalProperties`, which it rejects outright. `propertyOrdering` is a Gemini
+     * hint that keeps the generated fields in a stable order.
+     */
+    fun geminiSchema(): JSONObject {
+        val fields = listOf("source_block_ids", "corrected_source_text", "translated_text")
+        val fragment = JSONObject().put("type", "OBJECT")
+            .put("required", JSONArray(fields)).put("propertyOrdering", JSONArray(fields))
+            .put("properties", JSONObject()
+                .put("source_block_ids", JSONObject().put("type", "ARRAY")
+                    .put("items", JSONObject().put("type", "INTEGER")))
+                .put("corrected_source_text", JSONObject().put("type", "STRING"))
+                .put("translated_text", JSONObject().put("type", "STRING")))
+        return JSONObject().put("type", "OBJECT").put("required", JSONArray(listOf("fragments")))
+            .put("properties", JSONObject().put("fragments", JSONObject().put("type", "ARRAY").put("items", fragment)))
+    }
+
     fun payload(blocks: List<ScreenTextBlock>, source: String, target: String): String {
         val array = JSONArray()
         blocks.forEach { array.put(JSONObject().put("id", it.id).put("text", it.originalText)) }
@@ -85,6 +103,26 @@ object AiProtocol {
             for (j in 0 until content.length()) answer.append(content.optJSONObject(j)?.optString("text").orEmpty())
         }
         return answer.toString().ifBlank { throw AiFormatException("The response was empty.") }
+    }
+
+    /**
+     * The Gemini envelope. A refusal or a cut-off answer arrives as a finishReason rather than an
+     * HTTP error, so it has to be read here or it looks like malformed JSON.
+     */
+    fun geminiContent(raw: String): String {
+        val root = obj(raw)
+        root.optJSONObject("promptFeedback")?.optString("blockReason")?.ifBlank { null }
+            ?.let { throw AiFormatException("Gemini blocked the request ($it).") }
+        val candidate = root.optJSONArray("candidates")?.optJSONObject(0)
+            ?: throw AiFormatException("The answer carried no candidates.")
+        val finish = candidate.optString("finishReason", "")
+        if (finish.isNotBlank() && finish != "STOP")
+            throw AiFormatException("Gemini stopped early ($finish).")
+        val parts = candidate.optJSONObject("content")?.optJSONArray("parts")
+            ?: throw AiFormatException("The candidate carried no parts.")
+        val answer = StringBuilder()
+        for (i in 0 until parts.length()) answer.append(parts.optJSONObject(i)?.optString("text").orEmpty())
+        return answer.toString().ifBlank { throw AiFormatException("The answer was empty.") }
     }
 
     fun parse(raw: String): List<AiFragment> {

@@ -24,10 +24,12 @@ import androidx.compose.ui.unit.sp
 import com.adam.app_screentranslate.data.AiConfigManager
 import com.adam.app_screentranslate.model.*
 import com.adam.app_screentranslate.translation.ai.AiCheckLine
+import com.adam.app_screentranslate.translation.ai.AiConnection
+import com.adam.app_screentranslate.translation.ai.AiEngine
+import com.adam.app_screentranslate.translation.ai.AiHttpException
 import com.adam.app_screentranslate.translation.ai.AiPrompts
+import com.adam.app_screentranslate.translation.ai.GeminiClient
 import com.adam.app_screentranslate.translation.ai.XaiClient
-import com.adam.app_screentranslate.translation.ai.XaiException
-import com.adam.app_screentranslate.translation.ai.XaiModels
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -40,8 +42,13 @@ import kotlinx.coroutines.withContext
  * revealed token is held only until the user hides it again.
  */
 class AiPanel(private val config: AiConfigManager, private val scope: CoroutineScope) {
-    private val client = XaiClient()
+    // Engines are kept for the session: each remembers what its models negotiated.
+    private val engines = mutableMapOf<AiProvider, AiEngine>()
     private var running: Job? = null
+
+    private fun engine(): AiEngine = engines.getOrPut(config.settings.value.provider) {
+        if (config.settings.value.provider == AiProvider.GEMINI) GeminiClient() else XaiClient()
+    }
 
     val settings get() = config.settings
     val models get() = config.models
@@ -72,16 +79,17 @@ class AiPanel(private val config: AiConfigManager, private val scope: CoroutineS
     }
 
     fun clear() {
-        config.clearAll()
+        config.clearProvider()
         revealed = null
-        report = listOf(AiCheckLine(true, "Токен и список моделей удалены"))
+        report = listOf(AiCheckLine(true, "Ключ и список моделей удалены"))
     }
 
     fun copy(): String = config.token()
 
     fun refreshModels() = start {
-        val fetched = XaiModels.textTranslationModels(client.models(config.token()))
-        config.saveModels(fetched)
+        val engine = engine()
+        val fetched = engine.usable(engine.models(config.token()))
+        config.saveModels(engine.provider, fetched)
         val current = config.settings.value.model
         report = buildList {
             add(AiCheckLine(fetched.isNotEmpty(), "Текстовых моделей: ${fetched.size}"))
@@ -91,8 +99,9 @@ class AiPanel(private val config: AiConfigManager, private val scope: CoroutineS
     }
 
     fun check() = start {
-        val (lines, fetched) = client.check(config.token(), config.settings.value.model)
-        if (fetched.isNotEmpty()) config.saveModels(fetched)
+        val engine = engine()
+        val (lines, fetched) = AiConnection.check(engine, config.token(), config.settings.value.model)
+        if (fetched.isNotEmpty()) config.saveModels(engine.provider, fetched)
         report = lines
     }
 
@@ -103,7 +112,7 @@ class AiPanel(private val config: AiConfigManager, private val scope: CoroutineS
         running = scope.launch {
             try { withContext(Dispatchers.IO) { action() } }
             catch (e: CancellationException) { throw e }
-            catch (e: XaiException) { report = listOf(AiCheckLine(false, "${e.status}: ${e.reason}")) }
+            catch (e: AiHttpException) { report = listOf(AiCheckLine(false, "${e.status}: ${e.reason}")) }
             // The class name alone: an exception message can carry the text that was being sent.
             catch (e: Exception) { report = listOf(AiCheckLine(false, "Сбой: ${e.javaClass.simpleName}")) }
             finally { busy = false }
@@ -136,10 +145,24 @@ fun AiTab(panel: AiPanel, app: AppSettings, onApp: (AppSettings) -> Unit) {
             color = Muted, fontSize = 11.sp)
     }
 
-    Heading("API TOKEN XAI")
+    Heading("ПРОВАЙДЕР")
+    Section {
+        Options(AiProvider.entries, ai.provider, { it.label }) {
+            // Key, model and model list are all per provider; the panel state must not carry over.
+            draft = ""; show = false; panel.hide(); panel.update(ai.copy(provider = it))
+        }
+        Spacer(Modifier.height(10.dp))
+        Text(if (ai.provider == AiProvider.GEMINI)
+            "Ключ из Google AI Studio. Модели Flash отвечают заметно быстрее Grok; размышления отключаются автоматически."
+        else "Ключ из консоли xAI. Все текущие модели — reasoning, глубина размышлений понижена до low.",
+            color = Muted, fontSize = 11.sp)
+    }
+
+    Heading(if (ai.provider == AiProvider.GEMINI) "API-КЛЮЧ GOOGLE" else "API TOKEN XAI")
     Section {
         OutlinedTextField(value = draft, onValueChange = { draft = it }, singleLine = true,
-            label = { Text("API token") }, modifier = Modifier.fillMaxWidth(),
+            label = { Text(if (ai.provider == AiProvider.GEMINI) "API-ключ" else "API token") },
+            modifier = Modifier.fillMaxWidth(),
             visualTransformation = if (show) VisualTransformation.None else PasswordVisualTransformation(),
             colors = OutlinedTextFieldDefaults.colors(focusedBorderColor = Mint, focusedLabelColor = Mint))
         Spacer(Modifier.height(4.dp))
@@ -160,11 +183,11 @@ fun AiTab(panel: AiPanel, app: AppSettings, onApp: (AppSettings) -> Unit) {
         Button(onClick = { panel.save(draft); show = false; draft = "" }, enabled = draft.isNotBlank(),
             modifier = Modifier.fillMaxWidth(),
             colors = ButtonDefaults.buttonColors(containerColor = Mint, contentColor = Ink)) {
-            Text("Сохранить токен")
+            Text("Сохранить ключ")
         }
         Spacer(Modifier.height(10.dp))
-        Text(if (hasToken) "Токен сохранён и зашифрован ключом Android Keystore"
-        else "Токен не задан. Без него ИИ-режим не работает.",
+        Text(if (hasToken) "Ключ ${ai.provider.label} сохранён и зашифрован Android Keystore"
+        else "Ключ ${ai.provider.label} не задан. Без него ИИ-режим не работает.",
             color = if (hasToken) Mint else Color(0xFFFFD39B), fontSize = 11.sp)
     }
 
@@ -241,10 +264,10 @@ fun AiTab(panel: AiPanel, app: AppSettings, onApp: (AppSettings) -> Unit) {
     Section {
         Text("Что уходит в xAI", fontWeight = FontWeight.SemiBold)
         Spacer(Modifier.height(8.dp))
-        Text("Снимок экрана не покидает устройство и в ИИ-режиме — отправляется только распознанный текст, номера блоков и языки. Но текста уходит больше, чем обычному переводчику: весь распознанный экран пакетами и системный промпт.",
+        Text("Снимок экрана не покидает устройство и в ИИ-режиме — отправляется только распознанный текст, номера блоков и языки. Но текста уходит больше, чем обычному переводчику: весь распознанный экран пакетами и системный промпт. Получатель — ${ai.provider.label}.",
             color = Muted, fontSize = 13.sp)
         Spacer(Modifier.height(10.dp))
-        Text("Токен хранится зашифрованным на этом устройстве и не попадает в резервные копии Android.",
+        Text("Ключи хранятся зашифрованными на этом устройстве, по одному на провайдера, и не попадают в резервные копии Android.",
             color = Muted, fontSize = 11.sp)
     }
 

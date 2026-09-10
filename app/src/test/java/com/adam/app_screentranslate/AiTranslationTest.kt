@@ -14,6 +14,10 @@ class AiTranslationTest {
 
     private class FakeEngine(val answer: suspend (String) -> String) : AiEngine {
         var calls = 0
+        override val provider = AiProvider.XAI
+        override suspend fun models(token: String) = emptyList<AiModelInfo>()
+        override fun usable(models: List<AiModelInfo>) = models
+        override fun describe(model: String) = emptyList<String>()
         override suspend fun translate(token: String, model: String, system: String, user: String): String {
             calls++
             return answer(user)
@@ -52,6 +56,48 @@ class AiTranslationTest {
         // A model that also emits pictures is a generator wearing a text output modality.
         assertFalse(XaiModels.isTextTranslationModel(AiModelInfo("m-2", outputModalities = listOf("text", "image"))))
         assertTrue(XaiModels.isTextTranslationModel(AiModelInfo("m-3", outputModalities = listOf("text"))))
+    }
+
+    @Test fun geminiListKeepsOnlyModelsThatGenerateText() {
+        val generate = listOf("generateContent", "countTokens")
+        val models = listOf(
+            AiModelInfo("gemini-2.5-flash", outputModalities = generate),
+            AiModelInfo("gemini-2.5-pro", outputModalities = generate),
+            AiModelInfo("gemini-embedding-001", outputModalities = listOf("embedContent")),
+            AiModelInfo("imagen-4.0-generate-001", outputModalities = listOf("predict")),
+            AiModelInfo("veo-3.0-generate-001", outputModalities = listOf("predictLongRunning")),
+            AiModelInfo("gemini-2.5-flash-image", outputModalities = generate),
+            AiModelInfo("gemini-live-2.5-flash", outputModalities = generate),
+            AiModelInfo("gemini-2.5-flash-tts", outputModalities = generate))
+        assertEquals(listOf("gemini-2.5-pro", "gemini-2.5-flash"),
+            GeminiModels.textTranslationModels(models).map { it.id })
+    }
+
+    /** Gemini rejects a JSON Schema: it wants the OpenAPI subset, upper case and no extras. */
+    @Test fun geminiSchemaUsesTheOpenApiDialect() {
+        val schema = AiProtocol.geminiSchema()
+        assertEquals("OBJECT", schema.getString("type"))
+        assertFalse(schema.has("additionalProperties"))
+        val fragment = schema.getJSONObject("properties").getJSONObject("fragments").getJSONObject("items")
+        assertEquals("OBJECT", fragment.getString("type"))
+        assertFalse(fragment.has("additionalProperties"))
+        assertEquals(3, fragment.getJSONArray("required").length())
+        assertEquals("ARRAY", fragment.getJSONObject("properties").getJSONObject("source_block_ids").getString("type"))
+        assertEquals("INTEGER", fragment.getJSONObject("properties")
+            .getJSONObject("source_block_ids").getJSONObject("items").getString("type"))
+    }
+
+    @Test fun geminiEnvelopeReadsPartsAndReportsRefusals() {
+        assertEquals("ANSWER", AiProtocol.geminiContent(
+            """{"candidates":[{"finishReason":"STOP","content":{"role":"model","parts":[{"text":"ANS"},{"text":"WER"}]}}]}"""))
+        // A cut-off or refused answer arrives as a finishReason, not as an HTTP error.
+        assertThrows(AiFormatException::class.java) {
+            AiProtocol.geminiContent("""{"candidates":[{"finishReason":"MAX_TOKENS","content":{"parts":[{"text":"{"}]}}]}""")
+        }
+        assertThrows(AiFormatException::class.java) {
+            AiProtocol.geminiContent("""{"promptFeedback":{"blockReason":"SAFETY"}}""")
+        }
+        assertThrows(AiFormatException::class.java) { AiProtocol.geminiContent("""{"candidates":[]}""") }
     }
 
     // --- Промпты --------------------------------------------------------------------------------

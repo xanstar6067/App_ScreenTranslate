@@ -21,24 +21,27 @@ import javax.crypto.spec.GCMParameterSpec
 class SecureStore(private val prefs: SharedPreferences) {
     private val keyStore: KeyStore? = runCatching { KeyStore.getInstance(STORE).apply { load(null) } }.getOrNull()
 
-    fun has(): Boolean = prefs.contains(VALUE)
+    /** [name] separates one provider's key from another's; both share the one Keystore key. */
+    fun has(name: String): Boolean = prefs.contains(key(name))
 
-    fun token(): String {
-        val stored = prefs.getString(VALUE, null) ?: return ""
+    fun token(name: String): String {
+        val stored = prefs.getString(key(name), null) ?: return ""
         return runCatching { decrypt(stored) }.getOrElse {
             // A key invalidated by a lock-screen change leaves ciphertext that will never open again.
-            prefs.edit().remove(VALUE).apply()
+            prefs.edit().remove(key(name)).apply()
             ""
         }
     }
 
-    fun save(token: String): Boolean {
+    fun save(name: String, token: String): Boolean {
         val trimmed = token.trim()
-        if (trimmed.isEmpty()) { clear(); return true }
-        return runCatching { prefs.edit().putString(VALUE, encrypt(trimmed)).apply() }.isSuccess
+        if (trimmed.isEmpty()) { clear(name); return true }
+        return runCatching { prefs.edit().putString(key(name), encrypt(trimmed)).apply() }.isSuccess
     }
 
-    fun clear() = prefs.edit().remove(VALUE).apply()
+    fun clear(name: String) = prefs.edit().remove(key(name)).apply()
+
+    private fun key(name: String) = "$VALUE.$name"
 
     private fun encrypt(value: String): String {
         val cipher = Cipher.getInstance(TRANSFORMATION)

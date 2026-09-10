@@ -53,8 +53,13 @@ data class AppSettings(
     val cacheEnabled: Boolean = true, val buttonOpacity: Float = 1f, val ocrPreview: Boolean = false,
     val mode: TranslationMode = TranslationMode.WEB
 )
-/** xAI configuration. The token lives apart from this, encrypted; see SecureStore. */
+enum class AiProvider(val label: String) { XAI("xAI Grok"), GEMINI("Google Gemini") }
+/**
+ * AI configuration. Token, model and cached model list are kept per provider, so switching back
+ * restores what that provider was set to. The tokens live apart from this, encrypted; see SecureStore.
+ */
 data class AiSettings(
+    val provider: AiProvider = AiProvider.XAI,
     val model: String = "", val fallback: AiFallback = AiFallback.AUTO,
     val repair: Boolean = true, val prompt: String = "game"
 )
