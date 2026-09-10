@@ -16,8 +16,10 @@ import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.runtime.*
 import androidx.core.content.ContextCompat
+import androidx.lifecycle.lifecycleScope
 import com.adam.app_screentranslate.model.*
 import com.adam.app_screentranslate.service.TranslationService
+import com.adam.app_screentranslate.ui.AiPanel
 import com.adam.app_screentranslate.ui.HomeScreen
 import com.adam.app_screentranslate.ui.theme.App_ScreenTranslateTheme
 
@@ -62,8 +64,10 @@ class MainActivity : ComponentActivity() {
             val settings by app.settings.settings.collectAsState()
             val session by app.session.collectAsState()
             val permissions = remember(refresh, session.phase) { readPermissions() }
+            // Requests to xAI outlive recomposition, so the panel holds the activity's own scope.
+            val ai = remember { AiPanel(app.ai, lifecycleScope) }
             App_ScreenTranslateTheme {
-                HomeScreen(settings, session, permissions, app.cache,
+                HomeScreen(settings, session, permissions, app.cache, ai,
                     onSettings = app.settings::update, onToggle = { enable ->
                         if (enable) enableTranslator() else {
                             stopService(Intent(this, TranslationService::class.java))

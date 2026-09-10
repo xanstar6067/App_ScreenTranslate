@@ -15,7 +15,7 @@ class SettingsManager(context: Context) {
         background = enum("background", BackgroundStyle.AUTO), opacity = prefs.getFloat("opacity", .9f).coerceIn(.6f, 1f),
         textScale = prefs.getFloat("textScale", 1f).coerceIn(.8f, 1.3f), buttonSize = enum("buttonSize", ButtonSize.MEDIUM),
         cacheEnabled = prefs.getBoolean("cache", true), buttonOpacity = prefs.getFloat("buttonOpacity", 1f).coerceIn(.2f, 1f),
-        ocrPreview = prefs.getBoolean("ocrPreview", false)))
+        ocrPreview = prefs.getBoolean("ocrPreview", false), mode = enum("mode", TranslationMode.WEB)))
     val settings = mutable.asStateFlow()
     fun update(value: AppSettings) {
         prefs.edit().putString("target", value.target).putString("source", value.source)
@@ -23,7 +23,7 @@ class SettingsManager(context: Context) {
             .putString("background", value.background.name).putFloat("opacity", value.opacity)
             .putFloat("textScale", value.textScale).putString("buttonSize", value.buttonSize.name)
             .putBoolean("cache", value.cacheEnabled).putFloat("buttonOpacity", value.buttonOpacity.coerceIn(.2f, 1f))
-            .putBoolean("ocrPreview", value.ocrPreview).apply()
+            .putBoolean("ocrPreview", value.ocrPreview).putString("mode", value.mode.name).apply()
         mutable.value = value
     }
     fun position(landscape: Boolean) = Pair(prefs.getFloat("x_$landscape", .92f), prefs.getFloat("y_$landscape", .35f))

@@ -21,15 +21,15 @@ import com.adam.app_screentranslate.data.*
 import com.adam.app_screentranslate.model.*
 import kotlinx.coroutines.launch
 
-private val Mint = Color(0xFF67E8C4)
-private val Ink = Color(0xFF0E1B27)
-private val Muted = Color(0xFF93A6B6)
+internal val Mint = Color(0xFF67E8C4)
+internal val Ink = Color(0xFF0E1B27)
+internal val Muted = Color(0xFF93A6B6)
 private val Panel = Color(0xFF172733)
 
 @Composable
 fun HomeScreen(
     settings: AppSettings, session: SessionState, permissions: PermissionStatus, cache: TranslationCache,
-    onSettings: (AppSettings) -> Unit, onToggle: (Boolean) -> Unit,
+    ai: AiPanel, onSettings: (AppSettings) -> Unit, onToggle: (Boolean) -> Unit,
     onOverlay: () -> Unit, onCapture: () -> Unit, onNotifications: () -> Unit,
     onBattery: () -> Unit, onRefresh: () -> Unit
 ) {
@@ -55,11 +55,11 @@ fun HomeScreen(
             }
             Spacer(Modifier.height(26.dp))
             Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(16.dp)).background(Panel).padding(5.dp)) {
-                listOf("Перевод", "Настройки").forEachIndexed { i, title ->
+                listOf("Перевод", "Настройки", "ИИ").forEachIndexed { i, title ->
                     Box(Modifier.weight(1f).clip(RoundedCornerShape(12.dp))
                         .background(if (tab == i) Mint else Color.Transparent).clickable { tab = i }.padding(vertical = 12.dp),
                         contentAlignment = Alignment.Center) {
-                        Text(title, color = if (tab == i) Ink else Muted, fontWeight = FontWeight.SemiBold)
+                        Text(title, color = if (tab == i) Ink else Muted, fontWeight = FontWeight.SemiBold, fontSize = 14.sp)
                     }
                 }
             }
@@ -132,6 +132,8 @@ fun HomeScreen(
                     Guide("02", "Нажмите плавающую кнопку", "Перевод появится поверх текста. Управление остаётся доступным.")
                     Guide("03", "Нажмите ещё раз для очистки", "Перетаскивайте кнопку. Удерживайте, чтобы открыть настройки.")
                 }
+            } else if (tab == 2) {
+                AiTab(ai, settings, onSettings)
             } else {
                 Text("Подстройте под себя", fontSize = 25.sp, fontWeight = FontWeight.Bold)
                 Text("Для игр, диалогов и всего между ними", color = Muted, fontSize = 13.sp, modifier = Modifier.padding(top = 6.dp))
@@ -228,14 +230,14 @@ fun HomeScreen(
             }, confirmButton = { TextButton(onClick = { chooser = null }) { Text("Закрыть") } })
     }
 }
-@Composable private fun Section(content: @Composable ColumnScope.() -> Unit) {
+@Composable internal fun Section(content: @Composable ColumnScope.() -> Unit) {
     Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(20.dp)).background(Panel).padding(18.dp), content = content)
 }
-@Composable private fun Heading(text: String) {
+@Composable internal fun Heading(text: String) {
     Text(text, fontSize = 10.sp, letterSpacing = 1.6.sp, color = Muted, fontWeight = FontWeight.Bold,
         modifier = Modifier.padding(top = 25.dp, bottom = 12.dp, start = 2.dp))
 }
-@Composable private fun ChoiceRow(title: String, value: String, onClick: () -> Unit) {
+@Composable internal fun ChoiceRow(title: String, value: String, onClick: () -> Unit) {
     Row(Modifier.fillMaxWidth().clickable(onClick = onClick).padding(vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
         Column(Modifier.weight(1f)) {
             Text(title, color = Muted, fontSize = 12.sp)
@@ -245,7 +247,7 @@ fun HomeScreen(
         Text("⌄", color = Mint, fontSize = 24.sp)
     }
 }
-@Composable private fun <T> Options(items: List<T>, selected: T, label: (T) -> String, onSelect: (T) -> Unit) {
+@Composable internal fun <T> Options(items: List<T>, selected: T, label: (T) -> String, onSelect: (T) -> Unit) {
     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
         items.forEach { item ->
             Box(Modifier.weight(1f).clip(RoundedCornerShape(10.dp)).background(if (selected == item) Mint else Ink)

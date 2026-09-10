@@ -21,6 +21,7 @@ import com.adam.app_screentranslate.model.*
 import com.adam.app_screentranslate.ocr.OCRManager
 import com.adam.app_screentranslate.overlay.OverlayController
 import com.adam.app_screentranslate.translation.TranslationManager
+import com.adam.app_screentranslate.translation.ai.AiTranslator
 import kotlinx.coroutines.*
 
 class TranslationService : Service() {
@@ -42,6 +43,7 @@ class TranslationService : Service() {
     private var stopping = false
     private var screenEventsRegistered = false
     private val translations by lazy { TranslationManager(app.cache) }
+    private val aiTranslator by lazy { AiTranslator() }
     private val screenEvents = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
             if (intent.action == Intent.ACTION_SCREEN_OFF) {
@@ -173,7 +175,7 @@ class TranslationService : Service() {
                     overlay?.showTranslations(visible)
                     notice("Проверка OCR: распознанный текст без отправки переводчику")
                 } else {
-                    val errors = translations.translate(blocks, settings) { block ->
+                    val emit: suspend (ScreenTextBlock) -> Unit = { block ->
                         withContext(Dispatchers.Main.immediate) {
                             if (frameGeneration == generation) {
                                 visible += block
@@ -181,8 +183,24 @@ class TranslationService : Service() {
                             }
                         }
                     }
-                    if (errors > 0) notice(if (visible.isEmpty()) "Перевод недоступен. Проверьте сеть или смените сервис."
-                        else "Часть блоков не переведена: $errors")
+                    var aiReason: String? = null
+                    val errors = if (settings.mode == TranslationMode.AI) {
+                        val ai = app.ai.settings.value
+                        val token = withContext(Dispatchers.IO) { app.ai.token() }
+                        val outcome = aiTranslator.translate(blocks, settings, ai, token, app.cache, emit)
+                        aiReason = outcome.reason
+                        val fallback = ai.fallback.provider()
+                        when {
+                            outcome.untranslated.isEmpty() -> 0
+                            fallback == null -> outcome.untranslated.size
+                            else -> translations.translate(outcome.untranslated, settings.copy(provider = fallback), emit)
+                        }
+                    } else translations.translate(blocks, settings, emit)
+                    if (errors > 0) notice(when {
+                        visible.isNotEmpty() -> "Часть блоков не переведена: $errors"
+                        aiReason != null -> "ИИ-перевод недоступен: $aiReason"
+                        else -> "Перевод недоступен. Проверьте сеть или смените сервис."
+                    })
                     else if (visible.isEmpty()) notice("Текст уже на выбранном языке")
                 }
             } catch (e: CancellationException) { throw e }

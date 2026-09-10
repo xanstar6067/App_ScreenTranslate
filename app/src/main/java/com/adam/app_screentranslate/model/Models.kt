@@ -16,6 +16,15 @@ enum class TextScript { LATIN, CYRILLIC, JAPANESE, KOREAN, MIXED, UNKNOWN }
 enum class OcrEngine { MLKIT, TESSERACT }
 enum class MergeMode(val label: String, val gap: Float) { CAUTIOUS("Осторожное", .35f), NORMAL("Нормальное", .65f), AGGRESSIVE("Агрессивное", 1f) }
 enum class ProviderMode(val label: String) { AUTO("Автоматически"), GOOGLE("Google"), YANDEX("Yandex") }
+enum class TranslationMode(val label: String) { WEB("Обычный"), AI("ИИ") }
+/** Which ordinary translator picks up when xAI cannot answer. NONE reports the error instead. */
+enum class AiFallback(val label: String) { NONE("Не использовать"), GOOGLE("Google"), YANDEX("Yandex"), AUTO("Автоматически") }
+fun AiFallback.provider(): ProviderMode? = when (this) {
+    AiFallback.NONE -> null
+    AiFallback.GOOGLE -> ProviderMode.GOOGLE
+    AiFallback.YANDEX -> ProviderMode.YANDEX
+    AiFallback.AUTO -> ProviderMode.AUTO
+}
 enum class BackgroundStyle(val label: String) { AUTO("Автоматический контраст"), DARK("Тёмный"), LIGHT("Светлый") }
 enum class ButtonSize(val label: String, val dp: Int) { SMALL("Маленький", 44), MEDIUM("Средний", 56), LARGE("Большой", 68) }
 enum class SessionPhase { OFF, STARTING, ACTIVE, PAUSED, ERROR }
@@ -41,8 +50,22 @@ data class AppSettings(
     val target: String = "ru", val source: String = "auto", val provider: ProviderMode = ProviderMode.AUTO,
     val merge: MergeMode = MergeMode.NORMAL, val background: BackgroundStyle = BackgroundStyle.AUTO,
     val opacity: Float = .9f, val textScale: Float = 1f, val buttonSize: ButtonSize = ButtonSize.MEDIUM,
-    val cacheEnabled: Boolean = true, val buttonOpacity: Float = 1f, val ocrPreview: Boolean = false
+    val cacheEnabled: Boolean = true, val buttonOpacity: Float = 1f, val ocrPreview: Boolean = false,
+    val mode: TranslationMode = TranslationMode.WEB
 )
+/** xAI configuration. The token lives apart from this, encrypted; see SecureStore. */
+data class AiSettings(
+    val model: String = "", val fallback: AiFallback = AiFallback.AUTO,
+    val repair: Boolean = true, val prompt: String = "game"
+)
+/** One model as the xAI models API describes it. Only what model choice actually needs. */
+data class AiModelInfo(
+    val id: String, val aliases: List<String> = emptyList(),
+    val inputModalities: List<String> = emptyList(), val outputModalities: List<String> = emptyList(),
+    val maxPromptLength: Int? = null
+)
+/** One translation the model returned, bound to the recognized blocks it was built from. */
+data class AiFragment(val sourceBlockIds: List<Long>, val correctedSourceText: String, val translatedText: String)
 object Languages {
     // Curated shared target languages; source OCR is intentionally narrower.
     val targets = linkedMapOf("ru" to "Русский", "en" to "Английский", "ja" to "Японский", "ko" to "Корейский",
