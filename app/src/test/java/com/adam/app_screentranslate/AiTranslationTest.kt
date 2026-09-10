@@ -101,6 +101,31 @@ class AiTranslationTest {
         }
     }
 
+    // --- Конверты двух API ----------------------------------------------------------------------
+
+    @Test fun chatEnvelopeYieldsMessageContent() {
+        assertEquals("""{"fragments":[]}""", AiProtocol.chatContent(
+            """{"choices":[{"message":{"role":"assistant","content":"{\"fragments\":[]}"}}]}"""))
+        assertThrows(AiFormatException::class.java) { AiProtocol.chatContent("""{"choices":[]}""") }
+        assertThrows(AiFormatException::class.java) {
+            AiProtocol.chatContent("""{"choices":[{"message":{"content":""}}]}""")
+        }
+        assertThrows(AiFormatException::class.java) { AiProtocol.chatContent("<html>502</html>") }
+    }
+
+    /** A reasoning model emits its thinking as its own output item; it is not part of the answer. */
+    @Test fun responsesEnvelopeSkipsTheReasoningItem() {
+        assertEquals("ANSWER", AiProtocol.responsesContent(
+            """{"output":[{"type":"reasoning","content":[{"type":"text","text":"thinking"}]},
+               {"type":"message","content":[{"type":"output_text","text":"ANSWER"}]}]}"""))
+        assertEquals("SHORTCUT", AiProtocol.responsesContent(
+            """{"output_text":"SHORTCUT","output":[{"type":"message","content":[{"text":"ignored"}]}]}"""))
+        assertThrows(AiFormatException::class.java) {
+            AiProtocol.responsesContent("""{"output":[{"type":"reasoning","content":[{"text":"only thinking"}]}]}""")
+        }
+        assertThrows(AiFormatException::class.java) { AiProtocol.responsesContent("""{"id":"x"}""") }
+    }
+
     // --- Смысловая валидация --------------------------------------------------------------------
 
     @Test fun everyBlockMustBeCoveredExactlyOnce() {

@@ -59,6 +59,34 @@ object AiProtocol {
         return text.substring(open, close + 1)
     }
 
+    private fun obj(raw: String): JSONObject = try { JSONObject(raw) }
+        catch (_: Exception) { throw AiFormatException("The server answer was not a JSON object.") }
+
+    /** The /chat/completions envelope. */
+    fun chatContent(raw: String): String {
+        val message = obj(raw).optJSONArray("choices")?.optJSONObject(0)?.optJSONObject("message")
+            ?: throw AiFormatException("The completion carried no message.")
+        return message.optString("content", "").ifBlank { throw AiFormatException("The completion was empty.") }
+    }
+
+    /**
+     * The /responses envelope. A reasoning model puts its thinking in its own output item, which
+     * carries no answer and must not be concatenated into one.
+     */
+    fun responsesContent(raw: String): String {
+        val root = obj(raw)
+        root.optString("output_text", "").takeIf { it.isNotBlank() }?.let { return it }
+        val output = root.optJSONArray("output") ?: throw AiFormatException("The response carried no output.")
+        val answer = StringBuilder()
+        for (i in 0 until output.length()) {
+            val item = output.optJSONObject(i) ?: continue
+            if (item.optString("type") == "reasoning") continue
+            val content = item.optJSONArray("content") ?: continue
+            for (j in 0 until content.length()) answer.append(content.optJSONObject(j)?.optString("text").orEmpty())
+        }
+        return answer.toString().ifBlank { throw AiFormatException("The response was empty.") }
+    }
+
     fun parse(raw: String): List<AiFragment> {
         val text = unwrap(raw)
         val fragments = try {

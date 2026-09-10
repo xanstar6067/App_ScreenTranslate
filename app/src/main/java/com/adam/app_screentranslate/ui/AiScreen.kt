@@ -103,8 +103,9 @@ class AiPanel(private val config: AiConfigManager, private val scope: CoroutineS
         running = scope.launch {
             try { withContext(Dispatchers.IO) { action() } }
             catch (e: CancellationException) { throw e }
-            catch (e: XaiException) { report = listOf(AiCheckLine(false, e.reason)) }
-            catch (_: Exception) { report = listOf(AiCheckLine(false, "Запрос не удался. Проверьте сеть и токен.")) }
+            catch (e: XaiException) { report = listOf(AiCheckLine(false, "${e.status}: ${e.reason}")) }
+            // The class name alone: an exception message can carry the text that was being sent.
+            catch (e: Exception) { report = listOf(AiCheckLine(false, "Сбой: ${e.javaClass.simpleName}")) }
             finally { busy = false }
         }
     }
