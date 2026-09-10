@@ -13,6 +13,11 @@ class OverlayLayoutTest {
     private val style = LabelLayout.Style(padding = 3f, minTextSize = 11f, maxTextSize = 30f,
         hardMinTextSize = 7f, minCardWidth = 64f)
 
+    /** The same style the renderer builds on a normal phone: dp turned into device pixels. */
+    private val density = 2.75f
+    private val phone = LabelLayout.Style(padding = 3f * density, minTextSize = 11f * density,
+        maxTextSize = 30f * density, hardMinTextSize = 7f * density, minCardWidth = 64f * density)
+
     /** Stand-in for text metrics: glyphs are half as wide as they are tall, lines stack at 1.2. */
     private fun metrics(texts: Map<Long, String>) = object : LabelLayout.Measure {
         override fun height(id: Long, width: Float, textSize: Float): Float {
@@ -178,5 +183,130 @@ class OverlayLayoutTest {
     @Test fun matchingFrameKeepsCoordinatesUntouched() {
         val box = Box(12f, 34f, 56f, 78f)
         assertEquals(box, FrameMapping.toScreen(box, 2400, 1080, 2400, 1080))
+    }
+
+    /** Every card sits inside the free rectangle, so no pair of cards may ever overlap. */
+    private fun assertNoOverlaps(placements: List<LabelLayout.Placement>) {
+        for (i in placements.indices) for (j in i + 1 until placements.size) {
+            val a = placements[i]; val b = placements[j]
+            assertEquals("Card ${a.id} overlaps card ${b.id}", 0f, overlap(a.box, b.box), .5f)
+        }
+    }
+
+    @Test fun aDenseStatListNeverPilesCardsOnTopOfEachOther() {
+        // The stat sheet of a mobile game: twelve rows at one line pitch, each English label
+        // replaced by a far longer Russian one. This is the screen that used to end up as a pile.
+        val labels = listOf(
+            "Атака", "Защита", "Здоровье", "Скорость", "Шанс критического удара",
+            "Критический урон", "Снижение критического урона", "Проникновение",
+            "Увеличение урона", "Снижение урона", "Эффективность", "Устойчивость")
+        val sources = labels.indices.map { i -> Box(694f, 460f + i * 46f, 900f, 460f + i * 46f + 32f) }
+        val texts = labels.indices.associate { it.toLong() to labels[it] }
+        val placements = LabelLayout.place(
+            sources.mapIndexed { i, box -> LabelLayout.Request(i.toLong(), box, 1) },
+            2400f, 1080f, phone, metrics(texts))
+        assertNoOverlaps(placements)
+        val measure = metrics(texts)
+        for ((index, placement) in placements.withIndex()) {
+            assertTrue("Card $index must still cover its own text",
+                overlap(placement.box, sources[index]) > sources[index].area * .9f)
+            // Not overlapping is only half of it: a row this size holds one line of the size the
+            // game itself wrote at, so nothing here has any business being cut off.
+            assertTrue("Card $index had to cut its translation off",
+                measure.height(placement.id, placement.textWidth, placement.textSize) <= placement.box.height + .5f)
+            assertTrue("Card $index shrank below the text it replaces",
+                placement.textSize >= sources[index].height * .7f)
+        }
+    }
+
+    @Test fun aCardNeverLeavesTheRoomItWasGiven() {
+        // A row squeezed between two neighbours: the translation cannot fit, and the card used to
+        // grow through them anyway instead of shrinking the text.
+        val above = Box(100f, 100f, 400f, 140f)
+        val source = Box(100f, 150f, 400f, 190f)
+        val below = Box(100f, 200f, 400f, 240f)
+        val texts = mapOf(
+            1L to "Верх", 2L to "Совершенно неуместно длинный перевод короткой строки интерфейса, " +
+                "который не помещается ни в свою рамку, ни в промежуток между соседями", 3L to "Низ")
+        val placements = LabelLayout.place(listOf(
+            LabelLayout.Request(1, above, 1), LabelLayout.Request(2, source, 1),
+            LabelLayout.Request(3, below, 1)), 1200f, 800f, style, metrics(texts))
+        val middle = placements.first { it.id == 2L }
+        assertEquals("A card must not reach the row above", 0f, overlap(middle.box, above), .5f)
+        assertEquals("A card must not reach the row below", 0f, overlap(middle.box, below), .5f)
+        assertNoOverlaps(placements)
+    }
+
+    @Test fun aTurnedCardStaysInsideItsPlate() {
+        // A tilted panel header: the upright box around the turned card must stay on the plate.
+        val source = Box(1000f, 500f, 1300.2f, 616.3f)
+        val plate = Box(960f, 470f, 1360f, 650f)
+        val texts = mapOf(5L to "Внутренние коммуникации, а также всё остальное, что туда не влезает")
+        val placement = LabelLayout.place(
+            listOf(LabelLayout.Request(5, source, 1, angle = 15f, bounds = plate)),
+            2400f, 1080f, style, metrics(texts)).single()
+        val radians = placement.angle * Math.PI.toFloat() / 180f
+        val across = kotlin.math.abs(kotlin.math.cos(radians))
+        val down = kotlin.math.abs(kotlin.math.sin(radians))
+        val width = placement.box.width * across + placement.box.height * down
+        val height = placement.box.width * down + placement.box.height * across
+        val centreX = (placement.box.left + placement.box.right) / 2f
+        val centreY = (placement.box.top + placement.box.bottom) / 2f
+        assertTrue("Turned card leaves the plate on the left", centreX - width / 2f >= plate.left - .5f)
+        assertTrue("Turned card leaves the plate on the right", centreX + width / 2f <= plate.right + .5f)
+        assertTrue("Turned card leaves the plate on top", centreY - height / 2f >= plate.top - .5f)
+        assertTrue("Turned card leaves the plate at the bottom", centreY + height / 2f <= plate.bottom + .5f)
+    }
+
+    @Test fun aCrowdedScreenNeverProducesASinglePairOfOverlappingCards() {
+        // A whole game screen at once: a HUD row, a stat sheet, a tilted panel header and a
+        // subtitle, with translations from one word to a full sentence. No arrangement of them
+        // may put one card over another, whatever the layout has to give up to avoid it.
+        val requests = mutableListOf<LabelLayout.Request>()
+        val texts = HashMap<Long, String>()
+        var id = 0L
+        fun add(box: Box, text: String, lines: Int = 1, angle: Float = 0f, bounds: Box? = null) {
+            requests += LabelLayout.Request(id, box, lines, angle, bounds)
+            texts[id] = text
+            id++
+        }
+        for (i in 0 until 8) {
+            add(Box(40f + i * 210f, 30f, 40f + i * 210f + 150f, 66f), "Показатель номер $i интерфейса")
+        }
+        for (i in 0 until 14) {
+            add(Box(694f, 200f + i * 44f, 700f + 110f + (i % 5) * 22f, 200f + i * 44f + 32f),
+                "Совершенно непомерно длинное название характеристики $i")
+        }
+        for (i in 0 until 6) {
+            add(Box(1500f, 260f + i * 70f, 1500f + 260f, 260f + i * 70f + 40f),
+                "Навык $i: очень подробное описание, которому решительно не хватает места", lines = 2)
+        }
+        add(Box(1000f, 500f, 1300.2f, 616.3f), "Внутренние коммуникации", angle = 15f,
+            bounds = Box(960f, 470f, 1360f, 650f))
+        add(Box(300f, 940f, 2100f, 1000f),
+            "Смотрите, это лифт! Мы поднимемся на верхний этаж с его помощью.", bounds = Box(280f, 920f, 2120f, 1020f))
+        val placements = LabelLayout.place(requests, 2400f, 1080f, phone, metrics(texts))
+        assertEquals(requests.size, placements.size)
+        assertNoOverlaps(placements)
+        for (placement in placements) {
+            val source = requests.first { it.id == placement.id }.source
+            assertTrue("Card ${placement.id} lost the text it belongs to",
+                overlap(placement.box, source) > 0f)
+            assertTrue("Card ${placement.id} left the screen",
+                placement.box.left >= -1f && placement.box.top >= -1f &&
+                    placement.box.right <= 2401f && placement.box.bottom <= 1081f)
+        }
+    }
+
+    @Test fun theTextScaleSettingStillEnlargesACardThatHasTheRoom() {
+        // Cards take the size of the glyphs they replace, so the setting has to reach that size
+        // rather than only the readable floor, which a roomy card never touches.
+        val source = Box(400f, 400f, 900f, 440f)
+        val texts = mapOf(1L to "Начать")
+        val plain = LabelLayout.place(listOf(LabelLayout.Request(1, source, 1)),
+            2400f, 1080f, phone, metrics(texts)).single()
+        val large = LabelLayout.place(listOf(LabelLayout.Request(1, source, 1)),
+            2400f, 1080f, phone.copy(textScale = 1.5f), metrics(texts)).single()
+        assertTrue("Raising the text scale must raise the text", large.textSize > plain.textSize * 1.4f)
     }
 }

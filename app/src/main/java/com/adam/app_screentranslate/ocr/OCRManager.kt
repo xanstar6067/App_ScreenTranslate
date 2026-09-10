@@ -18,6 +18,8 @@ class OCRManager(private val context: Context) : AutoCloseable {
     private val japanese = TextRecognition.getClient(JapaneseTextRecognizerOptions.Builder().build())
     private val korean = TextRecognition.getClient(KoreanTextRecognizerOptions.Builder().build())
     private val language = LanguageIdentification.getClient()
+    /** Loading the Russian model takes longer than reading a screen with it; it is built once. */
+    private val cyrillic by lazy { CyrillicRecognizer(context) }
     suspend fun recognize(bitmap: Bitmap, source: String, mode: MergeMode): List<ScreenTextBlock> = withContext(Dispatchers.Default) {
         val models: List<TextRecognizer> = when (source) {
             "auto" -> listOf(latin, japanese, korean)
@@ -53,7 +55,7 @@ class OCRManager(private val context: Context) : AutoCloseable {
             }
         }
         ensureActive()
-        val russian = if (source == "auto" || source == "ru") CyrillicRecognizer(context).recognize(bitmap) else emptyList()
+        val russian = if (source == "auto" || source == "ru") cyrillic.recognize(bitmap) else emptyList()
         ensureActive()
         // An independently recognized Cyrillic line must veto Latin look-alike guesses in that region.
         val supported = raw.filter { candidate -> russian.none { ru ->
@@ -87,6 +89,6 @@ class OCRManager(private val context: Context) : AutoCloseable {
             }
         return total / count.coerceAtLeast(1)
     }
-    override fun close() { latin.close(); japanese.close(); korean.close(); language.close() }
+    override fun close() { latin.close(); japanese.close(); korean.close(); language.close(); cyrillic.close() }
     private companion object { const val PARAGRAPHS_PER_MODEL = 100_000 }
 }

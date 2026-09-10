@@ -6,29 +6,23 @@ import com.adam.app_screentranslate.model.*
 import com.googlecode.tesseract.android.TessBaseAPI
 import java.io.File
 
-/** Offline Russian recognizer. Only bundled model files are extracted, never screenshots. */
-class CyrillicRecognizer(private val context: Context) {
+/**
+ * Offline Russian recognizer. Only bundled model files are extracted, never screenshots.
+ *
+ * Loading the LSTM model is the slowest part of a recognition, and it says nothing about the frame,
+ * so the engine is built once and kept for the life of the session. It holds no picture between
+ * calls: the prepared copy is released before [recognize] returns.
+ */
+class CyrillicRecognizer(private val context: Context) : AutoCloseable {
+    private var engine: TessBaseAPI? = null
+    private var broken = false
+
+    /** The native engine has one image and one iterator; recognitions never run side by side. */
+    @Synchronized
     fun recognize(bitmap: Bitmap): List<ScreenTextBlock> {
-        val root = File(context.noBackupFilesDir, "ocr-v1")
-        synchronized(modelLock) {
-            val data = File(root, "tessdata").apply { mkdirs() }
-            for (name in listOf("rus", "eng")) {
-                val dest = File(data, "$name.traineddata")
-                if (!dest.exists()) {
-                    val temporary = File(data, "$name.tmp")
-                    context.assets.open("tessdata/$name.traineddata").use { input ->
-                        temporary.outputStream().use { output -> input.copyTo(output) }
-                    }
-                    check(temporary.renameTo(dest)) { "Cannot initialize OCR model" }
-                }
-            }
-        }
-        val tess = TessBaseAPI()
+        val tess = engine() ?: return emptyList()
         var prepared: Bitmap? = null
         try {
-            check(tess.init(root.absolutePath, "rus+eng", TessBaseAPI.OEM_LSTM_ONLY)) { "Cannot load Russian OCR" }
-            tess.setVariable("debug_file", "/dev/null")
-            tess.pageSegMode = TessBaseAPI.PageSegMode.PSM_SPARSE_TEXT
             prepared = prepare(bitmap)
             tess.setImage(prepared)
             tess.utF8Text // Execute native recognition before accessing its iterator.
@@ -46,12 +40,56 @@ class CyrillicRecognizer(private val context: Context) {
                         val r = iterator.getBoundingBox(level)
                         val box = Box(r[0].toFloat(), r[1].toFloat(), r[2].toFloat(), r[3].toFloat())
                         result += ScreenTextBlock(0, text, box, listOf(OcrLine(text, box, confidence=confidence)),
-                            detectedLanguage="ru", script=ScriptDetector.detect(text), confidence=confidence)
+                            detectedLanguage="ru", script=ScriptDetector.detect(text), confidence=confidence,
+                            engine=OcrEngine.TESSERACT)
                     }
                 } while (iterator.next(TessBaseAPI.PageIteratorLevel.RIL_TEXTLINE))
             } finally { iterator.delete() }
             return result
-        } finally { tess.recycle(); prepared?.recycle() }
+        } finally {
+            // The engine outlives the call; the picture it was working on must not.
+            try { tess.clear() } catch (_: Exception) { }
+            prepared?.recycle()
+        }
+    }
+
+    private fun engine(): TessBaseAPI? {
+        engine?.let { return it }
+        if (broken) return null
+        val root = File(context.noBackupFilesDir, "ocr-v1")
+        return try {
+            synchronized(modelLock) {
+                val data = File(root, "tessdata").apply { mkdirs() }
+                for (name in listOf("rus", "eng")) {
+                    val dest = File(data, "$name.traineddata")
+                    if (!dest.exists()) {
+                        val temporary = File(data, "$name.tmp")
+                        context.assets.open("tessdata/$name.traineddata").use { input ->
+                            temporary.outputStream().use { output -> input.copyTo(output) }
+                        }
+                        check(temporary.renameTo(dest)) { "Cannot initialize OCR model" }
+                    }
+                }
+            }
+            TessBaseAPI().also {
+                check(it.init(root.absolutePath, "rus+eng", TessBaseAPI.OEM_LSTM_ONLY)) { "Cannot load Russian OCR" }
+                it.setVariable("debug_file", "/dev/null")
+                it.pageSegMode = TessBaseAPI.PageSegMode.PSM_SPARSE_TEXT
+                engine = it
+            }
+        } catch (_: Exception) {
+            // Russian is one recognizer of several; the rest of the screen is still translatable.
+            broken = true
+            null
+        }
+    }
+
+    @Synchronized
+    override fun close() {
+        engine?.recycle()
+        engine = null
+        // A closed recognizer stays closed; the session that owned the model is over.
+        broken = true
     }
     private fun prepare(bitmap: Bitmap): Bitmap {
         var sum = 0L; var n = 0

@@ -6,6 +6,7 @@ import android.graphics.*
 import android.text.Layout
 import android.text.StaticLayout
 import android.text.TextPaint
+import android.text.TextUtils
 import android.view.MotionEvent
 import android.view.View
 import android.view.ViewConfiguration
@@ -64,7 +65,8 @@ class OverlayRenderer(context: Context) : View(context) {
             minTextSize = 11f * density * scale,
             maxTextSize = 30f * density * scale,
             hardMinTextSize = 7f * density,
-            minCardWidth = 64f * density
+            minCardWidth = 64f * density,
+            textScale = scale
         )
         val visible = blocks.filter { !it.translatedText.isNullOrBlank() }.distinctBy { it.id }
             .sortedWith(compareBy({ it.boundingBox.top }, { it.boundingBox.left }))
@@ -124,8 +126,9 @@ class OverlayRenderer(context: Context) : View(context) {
             Label(
                 placement.id,
                 RectF(placement.box.left, placement.box.top, placement.box.right, placement.box.bottom),
-                build(texts[placement.id].orEmpty(), paints.getValue(placement.id),
-                    placement.textWidth, placement.textSize, centred[placement.id] == true),
+                fitted(texts[placement.id].orEmpty(), paints.getValue(placement.id),
+                    placement.textWidth, placement.textSize, centred[placement.id] == true,
+                    placement.box.height),
                 fills.getValue(placement.id), dark[placement.id] == true, placement.angle,
                 erased.contains(placement.id)
             )
@@ -194,15 +197,32 @@ class OverlayRenderer(context: Context) : View(context) {
 
     // Constant 1 is also Layout.BREAK_STRATEGY_HIGH_QUALITY on API 26-28.
     @SuppressLint("InlinedApi")
-    private fun build(text: String, paint: TextPaint, width: Float, size: Float, centred: Boolean): StaticLayout {
-        paint.textSize = size
-        return StaticLayout.Builder
-            .obtain(text, 0, text.length, paint, width.roundToInt().coerceAtLeast(1))
+    private fun builder(text: String, paint: TextPaint, width: Float, size: Float, centred: Boolean) =
+        StaticLayout.Builder
+            .obtain(text, 0, text.length, paint.also { it.textSize = size }, width.roundToInt().coerceAtLeast(1))
             .setAlignment(if (centred) Layout.Alignment.ALIGN_CENTER else Layout.Alignment.ALIGN_NORMAL)
             .setIncludePad(false)
             .setBreakStrategy(android.graphics.text.LineBreaker.BREAK_STRATEGY_HIGH_QUALITY)
             .setHyphenationFrequency(Layout.HYPHENATION_FREQUENCY_NONE)
-            .build()
+
+    private fun build(text: String, paint: TextPaint, width: Float, size: Float, centred: Boolean): StaticLayout =
+        builder(text, paint, width, size, centred).build()
+
+    /**
+     * The same layout, cut to the height the card actually has. A card never grows past the free
+     * space around its text, so on a crowded screen a long translation can run out of card. Ending
+     * it on an ellipsis says so; a tail sliced off by the clip rectangle reads as a rendering fault.
+     */
+    private fun fitted(
+        text: String, paint: TextPaint, width: Float, size: Float, centred: Boolean, maxHeight: Float
+    ): StaticLayout {
+        val full = build(text, paint, width, size, centred)
+        if (full.height <= maxHeight) return full
+        var lines = full.lineCount
+        while (lines > 1 && full.getLineBottom(lines - 1) > maxHeight) lines--
+        if (lines >= full.lineCount) return full
+        return builder(text, paint, width, size, centred)
+            .setMaxLines(lines).setEllipsize(TextUtils.TruncateAt.END).build()
     }
 
     override fun onDraw(canvas: Canvas) {
@@ -242,9 +262,12 @@ class OverlayRenderer(context: Context) : View(context) {
                 canvas.drawRoundRect(box, radius, radius, border)
                 canvas.save()
                 canvas.clipRect(box)
+                // Centred in the card, and only padded while there is room to spare: on a crowded
+                // screen the card is exactly as tall as its line, and insisting on the margin
+                // there would push the glyphs out through the bottom of their own card.
                 canvas.translate(
                     box.left + padding,
-                    box.top + ((box.height() - label.layout.height) / 2f).coerceAtLeast(padding)
+                    box.top + ((box.height() - label.layout.height) / 2f).coerceAtLeast(0f)
                 )
                 label.layout.draw(canvas)
                 canvas.restore()

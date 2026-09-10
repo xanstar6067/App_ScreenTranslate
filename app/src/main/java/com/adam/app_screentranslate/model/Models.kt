@@ -12,6 +12,8 @@ data class Box(val left: Float, val top: Float, val right: Float, val bottom: Fl
         (min(bottom, other.bottom) - max(top, other.top)).coerceAtLeast(0f)
 }
 enum class TextScript { LATIN, CYRILLIC, JAPANESE, KOREAN, MIXED, UNKNOWN }
+/** Which recognizer produced a block. Two engines never share a confidence scale. */
+enum class OcrEngine { MLKIT, TESSERACT }
 enum class MergeMode(val label: String, val gap: Float) { CAUTIOUS("Осторожное", .35f), NORMAL("Нормальное", .65f), AGGRESSIVE("Агрессивное", 1f) }
 enum class ProviderMode(val label: String) { AUTO("Автоматически"), GOOGLE("Google"), YANDEX("Yandex") }
 enum class BackgroundStyle(val label: String) { AUTO("Автоматический контраст"), DARK("Тёмный"), LIGHT("Светлый") }
@@ -29,6 +31,8 @@ data class ScreenTextBlock(
     val angle: Float = 0f,
     /** Paragraph the recognizer itself put this text in; -1 when it reported no grouping. */
     val paragraph: Int = -1,
+    /** The recognizer this block came from. Its confidence means nothing outside that engine. */
+    val engine: OcrEngine = OcrEngine.MLKIT,
     val translatedText: String? = null, val backgroundLuminance: Float = .5f
 )
 data class TranslationRequest(val id: Long, val text: String, val source: String, val target: String)

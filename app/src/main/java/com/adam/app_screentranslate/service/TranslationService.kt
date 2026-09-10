@@ -27,6 +27,12 @@ class TranslationService : Service() {
     private val app get() = application as TranslatorApp
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private var capture: ScreenCaptureManager? = null
+    /**
+     * The recognizers load their models on first use and keep them. Rebuilding them for every tap
+     * paid that cost again each time; they hold nothing but the models between recognitions.
+     * Built on the worker thread that first needs them, read by the main thread on shutdown.
+     */
+    @Volatile private var ocr: OCRManager? = null
     private var overlay: OverlayController? = null
     private var processing: Job? = null
     private var settingsWatcher: Job? = null
@@ -151,7 +157,7 @@ class TranslationService : Service() {
                         // Reading the frame happens here and only here: what leaves this block is a
                         // coarse colour grid and recognized text, never the picture itself.
                         composition = FrameAnalyzer.analyze(bitmap)
-                        OCRManager(this@TranslationService).use { it.recognize(bitmap, settings.source, settings.merge) }
+                        engines().recognize(bitmap, settings.source, settings.merge)
                     }
                 } finally { bitmap.recycle() }
                 ensureActive()
@@ -194,6 +200,8 @@ class TranslationService : Service() {
             boundingBox = FrameMapping.toScreen(boundingBox, frameWidth, frameHeight, screenWidth, screenHeight),
             lines = lines.map { it.copy(box = FrameMapping.toScreen(it.box, frameWidth, frameHeight, screenWidth, screenHeight)) })
     }
+    private fun engines(): OCRManager = ocr ?: OCRManager(this).also { ocr = it }
+
     private fun invalidateFrame() {
         generation++
         processing?.cancel()
@@ -259,6 +267,14 @@ class TranslationService : Service() {
         if (screenEventsRegistered) { unregisterReceiver(screenEvents); screenEventsRegistered = false }
         overlay?.close(); overlay = null
         capture?.close(); capture = null
+        // Releasing a recognizer waits for the recognition it is running; that wait does not
+        // belong on the main thread, and this scope is deliberately not the cancelled one.
+        ocr?.let { engines ->
+            ocr = null
+            CoroutineScope(Dispatchers.IO).launch {
+                try { engines.close() } catch (_: Exception) { }
+            }
+        }
         stopForeground(STOP_FOREGROUND_REMOVE)
         if (!failed) app.session.value = SessionState()
         super.onDestroy()

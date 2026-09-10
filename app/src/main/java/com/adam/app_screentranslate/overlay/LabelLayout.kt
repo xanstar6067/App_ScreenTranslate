@@ -29,6 +29,12 @@ object LabelLayout {
         val minCardWidth: Float,
         /** A caption is worth this much shrinking to stay on one line instead of breaking apart. */
         val singleLineMinTextSize: Float = minTextSize * .8f,
+        /**
+         * What the reader asked translations to be, relative to the text they replace. A card
+         * starts at the size the game itself wrote at, so this is the only place the setting can
+         * still be heard.
+         */
+        val textScale: Float = 1f,
         val widthGrowth: Float = 2.2f,
         val heightGrowth: Float = 3.5f
     )
@@ -87,9 +93,16 @@ object LabelLayout {
             val obstacles = sources.filterIndexed { i, other -> i != index && overlap(other, source) <= 0f } + placed
             val limit = request.bounds?.let { clamp(it, screen) } ?: screen
             val room = room(source, obstacles, limit, style, space)
-            val preferred = (local.height / request.lines.coerceAtLeast(1) * LINE_TO_TEXT)
-                .coerceIn(min(style.minTextSize, style.maxTextSize), style.maxTextSize)
-            val placement = fit(request.id, local, room, screen, preferred, request.lines <= 1, tilt, style, measure)
+            // A turned card is laid out in its own frame, so the free rectangle has to be turned
+            // with it: what the card may use is the largest such frame around the centre of the
+            // text whose upright shadow still fits in the room.
+            val frame = if (tilt == 0f) room else turned(local, source, room, tilt)
+            // The size the original glyphs were drawn at. A dense screen writes smaller than the
+            // readable floor of this app, and forcing the floor there makes a translation that no
+            // longer fits the row it belongs to: what the reader could already read, they can read.
+            val preferred = (local.height / request.lines.coerceAtLeast(1) * LINE_TO_TEXT * style.textScale)
+                .coerceIn(min(style.hardMinTextSize, style.maxTextSize), style.maxTextSize)
+            val placement = fit(request.id, local, frame, screen, preferred, request.lines <= 1, tilt, style, measure)
             result += placement
             placed += if (tilt == 0f) placement.box else upright(placement.box, tilt)
         }
@@ -100,15 +113,22 @@ object LabelLayout {
         id: Long, source: Box, room: Box, screen: Box, preferred: Float,
         singleLine: Boolean, tilt: Float, style: Style, measure: Measure
     ): Placement {
-        // The card may use the whole free rectangle, but never more than a card's worth of growth:
-        // a translation that runs across the screen has lost the text it belongs to.
-        val maxWidth = (min(room.right - room.left, max(source.width * style.widthGrowth, style.minCardWidth))
-            - 2 * style.padding).coerceAtLeast(source.width)
-        val maxHeight = (min(room.bottom - room.top, max(source.height * style.heightGrowth, preferred * 4f))
-            - 2 * style.padding).coerceAtLeast(source.height)
+        // Everything the card may occupy, padding included. The free rectangle is what keeps a card
+        // off its neighbours, so no step below may ask for more space than it holds.
+        val fullWidth = (max(room.right - room.left, source.width) - 2 * style.padding).coerceAtLeast(source.width)
+        val fullHeight = (max(room.bottom - room.top, source.height) - 2 * style.padding).coerceAtLeast(source.height)
+        // Inside it a card still never grows more than a card's worth: a translation that runs
+        // across the screen has lost the text it belongs to.
+        val maxWidth = min(fullWidth, max(source.width * style.widthGrowth, style.minCardWidth))
+            .coerceAtLeast(source.width)
+        val maxHeight = min(fullHeight, max(source.height * style.heightGrowth, preferred * 4f))
+            .coerceAtLeast(source.height)
+        // The readable floor never rises above the size the text already had on screen.
+        val floor = min(style.minTextSize, preferred)
+        val caption = min(style.singleLineMinTextSize, preferred)
         // 0. A caption broken into syllables is unreadable; a smaller unbroken line is not.
         if (singleLine) {
-            largestOnOneLine(id, maxWidth, preferred, style.singleLineMinTextSize, measure)?.let { size ->
+            largestOnOneLine(id, maxWidth, maxHeight, preferred, caption, measure)?.let { size ->
                 val width = min(measure.lineWidth(id, size), maxWidth)
                 // A tiny box is an icon or a button: its label reads best centred on it.
                 val centred = source.width < style.minCardWidth * CENTRED_SOURCE
@@ -116,18 +136,36 @@ object LabelLayout {
             }
         }
         // 1. The translation reads best exactly where the original text was.
-        largestFitting(id, source.width, source.height, preferred, style.minTextSize, measure)?.let {
+        largestFitting(id, source.width, source.height, preferred, floor, measure)?.let {
             return placement(id, source, source.width, it, source.height, room, screen, style, false, tilt)
         }
         // 2. Grow into free space instead of shrinking the text below the readable floor.
         for (width in widths(source.width, maxWidth)) {
-            val size = largestFitting(id, width, maxHeight, preferred, style.minTextSize, measure) ?: continue
+            val size = largestFitting(id, width, maxHeight, preferred, floor, measure) ?: continue
             return placement(id, source, width, size, measure.height(id, width, size), room, screen, style, false, tilt)
         }
-        // 3. Dense screen: a complete translation at a small size beats a clipped one.
-        val size = largestFitting(id, maxWidth, maxHeight, style.minTextSize, style.hardMinTextSize, measure)
+        // 3. The rest of the free rectangle belongs to this card too. Spending it costs the reader
+        // nothing, while every size below this point costs readability.
+        if (fullWidth > maxWidth || fullHeight > maxHeight) {
+            for (width in widths(maxWidth, fullWidth)) {
+                val size = largestFitting(id, width, fullHeight, preferred, floor, measure) ?: continue
+                return placement(id, source, width, size, measure.height(id, width, size), room, screen, style, false, tilt)
+            }
+        }
+        // 4. A caption with no room to wrap is still readable one small line at a time.
+        if (singleLine) {
+            largestOnOneLine(id, fullWidth, fullHeight, caption, style.hardMinTextSize, measure)?.let { size ->
+                val width = min(measure.lineWidth(id, size), fullWidth)
+                val centred = source.width < style.minCardWidth * CENTRED_SOURCE
+                return placement(id, source, width, size, measure.height(id, width, size), room, screen, style, centred, tilt)
+            }
+        }
+        // 5. Dense screen: a complete translation at a small size beats a clipped one. When even
+        // that does not fit, the card still stops at the free rectangle and the renderer cuts the
+        // tail off, because a card spilling over its neighbour costs two translations, not one.
+        val size = largestFitting(id, fullWidth, fullHeight, floor, style.hardMinTextSize, measure)
             ?: style.hardMinTextSize
-        return placement(id, source, maxWidth, size, measure.height(id, maxWidth, size), room, screen, style, false, tilt)
+        return placement(id, source, fullWidth, size, measure.height(id, fullWidth, size), room, screen, style, false, tilt)
     }
 
     private fun placement(
@@ -135,8 +173,10 @@ object LabelLayout {
         room: Box, screen: Box, style: Style, centred: Boolean, tilt: Float
     ): Placement {
         // A short translation still covers the whole original text: nothing of it may stay visible.
-        val width = max(textWidth, source.width) + 2 * style.padding
-        val height = max(textHeight, source.height) + 2 * style.padding
+        // Staying inside the free rectangle is the harder promise of the two, so a card with room
+        // for only one of them gives up its padding first and the margin around its glyphs last.
+        val width = fitted(max(textWidth, source.width), source.width, room.right - room.left, style.padding)
+        val height = fitted(max(textHeight, source.height), source.height, room.bottom - room.top, style.padding)
         // A card that will be turned keeps the centre of the text as its own: that is the one point
         // the rotation leaves in place, so it is the only anchor that survives it.
         if (tilt != 0f) {
@@ -152,6 +192,13 @@ object LabelLayout {
         val y = into(into(top, height, room.top, room.bottom), height, screen.top, screen.bottom)
         return Placement(id, Box(x, y, x + width, y + height), width - 2 * style.padding, textSize, 0f)
     }
+
+    /**
+     * Card size along one axis: [wanted] plus padding, cut back to the room the card was given and
+     * never below [must], the extent of the original glyphs the card has to cover.
+     */
+    private fun fitted(wanted: Float, must: Float, room: Float, padding: Float): Float =
+        max(min(wanted + 2 * padding, max(room, must)), must)
 
     /** Keeps a [size]-wide span inside [low]..[high], giving up on the far edge when it cannot fit. */
     private fun into(value: Float, size: Float, low: Float, high: Float): Float =
@@ -177,17 +224,25 @@ object LabelLayout {
         return low
     }
 
+    /**
+     * Largest size at which the whole text is one unbroken line inside [maxWidth] and [maxHeight].
+     * A line that fits the width but not the height would be drawn and then cut off by the card.
+     */
     private fun largestOnOneLine(
-        id: Long, maxWidth: Float, from: Float, to: Float, measure: Measure
+        id: Long, maxWidth: Float, maxHeight: Float, from: Float, to: Float, measure: Measure
     ): Float? {
+        fun fits(size: Float): Boolean {
+            val line = measure.lineWidth(id, size)
+            return line <= maxWidth && measure.height(id, min(line, maxWidth), size) <= maxHeight
+        }
         if (maxWidth <= 0f || from < to) return null
-        if (measure.lineWidth(id, from) <= maxWidth) return from
-        if (measure.lineWidth(id, to) > maxWidth) return null
+        if (fits(from)) return from
+        if (!fits(to)) return null
         var low = to
         var high = from
         repeat(5) {
             val mid = (low + high) / 2f
-            if (measure.lineWidth(id, mid) <= maxWidth) low = mid else high = mid
+            if (fits(mid)) low = mid else high = mid
         }
         return low
     }
@@ -228,6 +283,25 @@ object LabelLayout {
         }
         // A neighbour may already cover the source; the room always contains it.
         return Box(min(left, source.left), min(top, source.top), max(right, source.right), max(bottom, source.bottom))
+    }
+
+    /**
+     * The free rectangle of a turned card, expressed in the frame the card is laid out in.
+     *
+     * A turned card is pinned to the centre of its text, so it can only use the part of the room
+     * that lies symmetrically around that centre; what is left of the room on the far side is out
+     * of reach. Turning that reachable rectangle back gives the card's own limits, and the card is
+     * never allowed below the line of glyphs it has to cover.
+     */
+    private fun turned(local: Box, source: Box, room: Box, tilt: Float): Box {
+        val x = (source.left + source.right) / 2f
+        val y = (source.top + source.bottom) / 2f
+        val across = min(x - room.left, room.right - x).coerceAtLeast(local.width / 2f)
+        val down = min(y - room.top, room.bottom - y).coerceAtLeast(local.height / 2f)
+        val reachable = oriented(Box(x - across, y - down, x + across, y + down), tilt) ?: local
+        val width = max(reachable.width, local.width) / 2f
+        val height = max(reachable.height, local.height) / 2f
+        return Box(x - width, y - height, x + width, y + height)
     }
 
     /**

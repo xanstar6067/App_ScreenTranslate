@@ -130,4 +130,97 @@ class TextPipelineTest {
             block("Attack", 0f), block("11,503", 0f, x = 300f), block("22.6%", 26f, x = 300f)), MergeMode.NORMAL)
         assertEquals(listOf("Attack"), result.map { it.originalText })
     }
+
+    @Test fun aWrappedSentenceSurvivesTheCautiousMergeMode() {
+        // The same subtitle under the tightest setting. The merge mode weighs guesses about lines
+        // that might belong together; this pair is not a guess, the text says so itself.
+        for (mode in MergeMode.entries) {
+            val result = TextBlockReconstructor().reconstruct(listOf(
+                line("Look, it's a lift! We'll get to the top floor with", Box(886f, 672f, 1637f, 706f)),
+                line("this.", Box(886f, 730f, 955f, 750f))), mode)
+            assertEquals("Mode $mode split the sentence", 1, result.size)
+        }
+    }
+
+    @Test fun aShortLabelStillJoinsTheLineThatDidNotFinish() {
+        // Two lines that read as buttons by every rule about controls, and as one sentence by the
+        // comma at the end of the first. The comma wins.
+        val result = TextBlockReconstructor().reconstruct(listOf(
+            line("Go north,", Box(100f, 100f, 260f, 132f)),
+            line("Then wait", Box(100f, 140f, 280f, 172f))), MergeMode.NORMAL)
+        assertEquals(1, result.size)
+        assertEquals("Go north, Then wait", result.single().originalText)
+    }
+
+    @Test fun oneParagraphOfTwoSentencesStaysOneCard() {
+        // A dialogue box the recognizer read as a single paragraph. Splitting it at the full stop
+        // costs one card its context and the screen a card it did not need.
+        val result = TextBlockReconstructor().reconstruct(listOf(
+            line("The gate is closed.", Box(300f, 900f, 900f, 936f), paragraph = 5),
+            line("We need another way in.", Box(300f, 944f, 980f, 980f), paragraph = 5)), MergeMode.NORMAL)
+        assertEquals(1, result.size)
+        assertEquals("The gate is closed. We need another way in.", result.single().originalText)
+    }
+
+    @Test fun aFinishedSentenceWithoutTheRecognizersWordStaysApart() {
+        val result = TextBlockReconstructor().reconstruct(listOf(
+            line("The gate is closed.", Box(300f, 900f, 900f, 936f)),
+            line("We need another way in.", Box(300f, 944f, 980f, 980f))), MergeMode.NORMAL)
+        assertEquals(2, result.size)
+    }
+
+    @Test fun japaneseLinesJoinWithoutAnInventedSpace() {
+        assertEquals("エレベーターだ、これで最上階まで行ける",
+            TextBlockReconstructor.joinLines(listOf("エレベーターだ、これで最上階まで", "行ける")))
+        // Korean is written with spaces, so a wrap there is a space.
+        assertEquals("로그인 하십시오", TextBlockReconstructor.joinLines(listOf("로그인", "하십시오")))
+        assertEquals("Login here", TextBlockReconstructor.joinLines(listOf("Login", "here")))
+    }
+
+    @Test fun aWrappedJapaneseParagraphReachesTheTranslatorUnbroken() {
+        val result = TextBlockReconstructor().reconstruct(listOf(
+            line("エレベーターだ、これで最上階まで", Box(400f, 600f, 1000f, 640f), paragraph = 3),
+            line("行ける", Box(400f, 672f, 560f, 704f), paragraph = 3)), MergeMode.NORMAL)
+        assertEquals("エレベーターだ、これで最上階まで行ける", result.single().originalText)
+    }
+
+    @Test fun anEngineThatReportsNoUsefulConfidenceIsNotThrownAway() {
+        // Some builds of a recognizer fill the confidence field with zeroes. Read literally that
+        // wipes out everything it recognized; read as the absence of evidence it changes nothing.
+        val blank = listOf(
+            line("Start the mission", Box(100f, 100f, 400f, 132f)).copy(confidence = 0f),
+            line("Return to base", Box(100f, 300f, 400f, 332f)).copy(confidence = 0f))
+        assertEquals(2, TextBlockReconstructor().reconstruct(blank, MergeMode.NORMAL).size)
+    }
+
+    @Test fun aLineItsOwnEngineDoubtsIsStillDropped() {
+        val judged = listOf(
+            line("Start the mission", Box(100f, 100f, 400f, 132f)).copy(confidence = .92f),
+            line("Rtuin 1o basc", Box(100f, 300f, 400f, 332f)).copy(confidence = .21f))
+        assertEquals(listOf("Start the mission"),
+            TextBlockReconstructor().reconstruct(judged, MergeMode.NORMAL).map { it.originalText })
+    }
+
+    @Test fun aDoubtingEngineDoesNotSilenceAConfidentOne() {
+        // Tesseract grades itself on its own scale; its numbers must not decide whether ML Kit's
+        // lines are worth keeping.
+        val mixed = listOf(
+            line("Start the mission", Box(100f, 100f, 400f, 132f)).copy(confidence = 0f),
+            line("Начать задание", Box(100f, 300f, 400f, 332f))
+                .copy(confidence = .88f, engine = OcrEngine.TESSERACT))
+        assertEquals(2, TextBlockReconstructor().reconstruct(mixed, MergeMode.NORMAL).size)
+    }
+
+    @Test fun paragraphsDoNotDependOnTheOrderTheLinesArriveIn() {
+        val lines = listOf(
+            line("We have to leave", Box(100f, 100f, 500f, 132f)),
+            line("this place before", Box(100f, 140f, 500f, 172f)),
+            line("the sun rises.", Box(100f, 180f, 460f, 212f)),
+            line("New Game", Box(1400f, 100f, 1600f, 132f)),
+            line("Settings", Box(1400f, 140f, 1600f, 172f)))
+        val forward = TextBlockReconstructor().reconstruct(lines, MergeMode.NORMAL)
+        val backward = TextBlockReconstructor().reconstruct(lines.reversed(), MergeMode.NORMAL)
+        assertEquals(forward.map { it.originalText }, backward.map { it.originalText })
+        assertEquals(3, forward.size)
+    }
 }

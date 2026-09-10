@@ -72,7 +72,6 @@ object ScriptDetector {
 class TextBlockReconstructor {
     fun reconstruct(input: List<ScreenTextBlock>, mode: MergeMode): List<ScreenTextBlock> {
         // Arbitrate at LINE level: different models often return different paragraph boundaries.
-        val selected = mutableListOf<ScreenTextBlock>()
         val candidates = input.flatMap { block ->
             if (block.lines.isEmpty()) {
                 val text = TextNormalizer.harmonizeScript(block.originalText)
@@ -83,57 +82,77 @@ class TextBlockReconstructor {
                     confidence = line.confidence ?: block.confidence, script = ScriptDetector.detect(text),
                     angle = line.angle)
             }
-        }
-        for (block in candidates.filter { TextNormalizer.isTranslatable(it.originalText) && (it.confidence ?: 1f) >= .55f }
-            .sortedByDescending { quality(it) }) {
+        }.filter { TextNormalizer.isTranslatable(it.originalText) }
+        val judged = judging(candidates)
+        val selected = mutableListOf<ScreenTextBlock>()
+        for (block in candidates.filter { it.engine !in judged || (it.confidence ?: 1f) >= MIN_CONFIDENCE }
+            .sortedByDescending { quality(it, judged) }) {
             if (selected.none { duplicate(it, block) }) selected += block
         }
-        val result = selected.sortedWith(compareBy({ it.boundingBox.top }, { it.boundingBox.left })).toMutableList()
-        var changed = true
-        while (changed) {
-            changed = false
-            outer@ for (i in result.indices) for (j in i + 1 until result.size) {
-                val a = result[i]; val b = result[j]
-                if (canMerge(a, b, mode)) {
-                    val text = joinLines(listOf(a.originalText, b.originalText))
-                    result[i] = a.copy(originalText = text, boundingBox = a.boundingBox.union(b.boundingBox),
-                        lines = a.lines + b.lines, script = ScriptDetector.detect(text),
-                        paragraph = if (a.paragraph == b.paragraph) a.paragraph else -1)
-                    result.removeAt(j)
-                    changed = true
-                    break@outer
-                }
+        val ordered = selected.sortedWith(compareBy({ it.boundingBox.top }, { it.boundingBox.left }))
+        return paragraphs(ordered, mode)
+            .mapIndexed { i, b -> b.copy(id = i.toLong(), originalText = TextNormalizer.normalize(b.originalText)) }
+    }
+
+    /**
+     * Engines whose confidence is worth listening to. A recognizer that reports nothing, or the
+     * same low number for every line it read, is filling the field in rather than judging its own
+     * work; taking it at face value would throw away everything that engine recognized.
+     */
+    private fun judging(candidates: List<ScreenTextBlock>): Set<OcrEngine> =
+        candidates.groupBy { it.engine }.filterValues { group ->
+            val reported = group.mapNotNull { it.confidence }
+            reported.size * 2 >= group.size && reported.any { it >= MIN_CONFIDENCE }
+        }.keys
+
+    /**
+     * Reassembles paragraphs out of single lines. Every line looks for the one line below that
+     * continues it, and every line can be continued once: a paragraph is a chain, not a cluster.
+     * Linking instead of repeatedly merging in place keeps the decision on the real geometry of
+     * two lines rather than on the drifting rectangle around everything joined so far, and makes
+     * the result independent of the order the pairs happen to be visited in.
+     */
+    private fun paragraphs(ordered: List<ScreenTextBlock>, mode: MergeMode): List<ScreenTextBlock> {
+        val next = IntArray(ordered.size) { -1 }
+        val continued = BooleanArray(ordered.size)
+        for (i in ordered.indices) {
+            var best = -1
+            var bestGap = Float.MAX_VALUE
+            for (j in i + 1 until ordered.size) {
+                // Sorted by top edge: past this distance nothing below can be the same paragraph.
+                if (ordered[j].boundingBox.top - ordered[i].boundingBox.bottom >
+                    ordered[i].boundingBox.height * SEARCH) break
+                if (continued[j] || !canMerge(ordered[i], ordered[j], mode)) continue
+                val gap = ordered[j].boundingBox.top - ordered[i].boundingBox.bottom
+                if (gap < bestGap) { best = j; bestGap = gap }
             }
+            if (best >= 0) { next[i] = best; continued[best] = true }
         }
-        return result.mapIndexed { i, b -> b.copy(id = i.toLong(), originalText = TextNormalizer.normalize(b.originalText)) }
+        val result = mutableListOf<ScreenTextBlock>()
+        for (i in ordered.indices) {
+            if (continued[i]) continue
+            var block = ordered[i]
+            var at = next[i]
+            while (at >= 0) {
+                val tail = ordered[at]
+                val text = joinLines(listOf(block.originalText, tail.originalText))
+                block = block.copy(originalText = text, boundingBox = block.boundingBox.union(tail.boundingBox),
+                    lines = block.lines + tail.lines, script = ScriptDetector.detect(text),
+                    paragraph = if (block.paragraph == tail.paragraph) block.paragraph else -1)
+                at = next[at]
+            }
+            result += block
+        }
+        return result.sortedWith(compareBy({ it.boundingBox.top }, { it.boundingBox.left }))
     }
 
-    private fun splitObviousControls(block: ScreenTextBlock): List<ScreenTextBlock> {
-        if (block.lines.size < 2 || block.lines.any { abs(it.angle) > 15f }) return listOf(block)
-        val lines = block.lines.sortedBy { it.box.top }
-        val groups = mutableListOf(mutableListOf(lines.first()))
-        for (line in lines.drop(1)) {
-            val prev = groups.last().last()
-            fun label(text: String) = text.length < 24 && text.split(' ').size <= 3 && text.firstOrNull()?.isUpperCase() == true
-            val gap = line.box.top - prev.box.bottom
-            if (gap > (line.box.height + prev.box.height) * .55f ||
-                (label(prev.text) && label(line.text) && gap > 0)) groups += mutableListOf(line)
-            else groups.last() += line
-        }
-        if (groups.size == 1) return listOf(block)
-        return groups.map { group ->
-            val text = joinLines(group.map { it.text })
-            block.copy(originalText = text, lines = group, boundingBox = group.map { it.box }.reduce { a, b -> a.union(b) },
-                script = ScriptDetector.detect(text))
-        }
-    }
-
-    private fun quality(b: ScreenTextBlock): Float {
+    private fun quality(b: ScreenTextBlock, judged: Set<OcrEngine>): Float {
         val letters = b.originalText.count(Char::isLetter).coerceAtLeast(1)
         val cjk = b.originalText.count { it in '\u3040'..'\u9FFF' || it in '\uAC00'..'\uD7AF' }
         val strayScriptPenalty = if (cjk in 1..2 && cjk.toFloat()/letters < .25f) .12f else 0f
         // Confidence is model evidence; a CJK character alone is never evidence of correctness.
-        return (b.confidence ?: .65f) - strayScriptPenalty
+        val reported = if (b.engine in judged) b.confidence else null
+        return (reported ?: NEUTRAL) - strayScriptPenalty
     }
     private fun duplicate(a: ScreenTextBlock, b: ScreenTextBlock): Boolean {
         val overlap = a.boundingBox.intersection(b.boundingBox)
@@ -160,26 +179,41 @@ class TextBlockReconstructor {
         if (a.lines.any { abs(it.angle) > 15f } || b.lines.any { abs(it.angle) > 15f }) return false
         if (a.script != b.script && a.script != TextScript.MIXED && b.script != TextScript.MIXED) return false
         val first = a.originalText.trim(); val second = b.originalText.trim()
-        if (first.lastOrNull() in SENTENCE_END) return false
         /*
          * Geometry alone cannot tell the last line of a subtitle from the row of buttons under it,
          * so the thresholds below have to stay tight — and a wrapped sentence whose tail is one
-         * short word then falls outside every one of them. Two things do know better: the paragraph
-         * the recognizer itself reported, and the sentence that plainly has not ended yet. Where one
-         * of them speaks, the geometry only has to be plausible instead of textbook.
+         * short word then falls outside every one of them. Two things do know better, and they are
+         * not interchangeable. The paragraph the recognizer reported groups lines that look alike,
+         * which one native block full of menu buttons also does; it may stretch the geometry but
+         * never speaks about the text. A sentence that has plainly not ended is a statement about
+         * the text itself, and it outranks every rule written for controls below.
          */
-        val related = (a.paragraph >= 0 && a.paragraph == b.paragraph) || continues(first, second)
+        val sameParagraph = a.paragraph >= 0 && a.paragraph == b.paragraph
+        val unfinished = continues(first, second)
+        // A finished sentence starts a card of its own unless the recognizer read both lines as one
+        // paragraph: only it can tell a wrapped paragraph from the next control underneath it.
+        if (first.lastOrNull() in SENTENCE_END && !sameParagraph) return false
+        val related = sameParagraph || unfinished
         val gap = rb.top - ra.bottom
-        if (gap < -h * .15f || gap > h * mode.gap * (if (related) 1.8f else 1f)) return false
+        // A line the text itself announced sits wherever the game's own leading put it. The merge
+        // mode governs the guesses; it does not get to overrule the wrap that was already declared.
+        val allowed = h * when {
+            unfinished -> max(mode.gap, UNFINISHED_GAP)
+            sameParagraph -> mode.gap * RELATED_GAP
+            else -> mode.gap
+        }
+        if (gap < -h * .15f || gap > allowed) return false
         if (max(ah, bh) / min(ah, bh) > (if (related) 1.9f else 1.45f)) return false
         val overlapX = (min(ra.right, rb.right) - max(ra.left, rb.left)).coerceAtLeast(0f) / min(ra.width, rb.width)
         if (overlapX < (if (related) .3f else .65f)) return false
         if (abs(ra.left - rb.left) > h * (if (related) 1.6f else .8f)) return false
         // Short title-case labels are separate controls, even at tight line spacing and even when
-        // the recognizer read them as one paragraph. This is what keeps a menu a menu.
+        // the recognizer read them as one paragraph. This is what keeps a menu a menu — but a menu
+        // item never ends on a comma and is never followed by a word that opens in lower case.
         val labelA = first.split(' ').size <= 3 && first.length < 24
         val labelB = second.split(' ').size <= 3 && second.length < 24
-        if (labelA && labelB && first.firstOrNull()?.isUpperCase() == true && second.firstOrNull()?.isUpperCase() == true) return false
+        if (labelA && labelB && !unfinished &&
+            first.firstOrNull()?.isUpperCase() == true && second.firstOrNull()?.isUpperCase() == true) return false
         return true
     }
 
@@ -196,12 +230,32 @@ class TextBlockReconstructor {
     }
     companion object {
         private val SENTENCE_END = listOf('.', '!', '?', '。', '！', '？', ':')
+        /** How far below a line its own wrapped tail can sit, in line heights, whatever the mode. */
+        private const val UNFINISHED_GAP = 1.6f
+        /** How much the geometry may be stretched for two lines the recognizer itself grouped. */
+        private const val RELATED_GAP = 1.8f
+        /** Below this a recognizer is not reporting evidence, only filling the field in. */
+        private const val MIN_CONFIDENCE = .55f
+        /** Score of a line whose engine reported nothing worth comparing. */
+        private const val NEUTRAL = .65f
+        /** How far below a line, in its own heights, its continuation is still looked for. */
+        private const val SEARCH = 4f
+
         fun joinLines(lines: List<String>): String = lines.fold("") { out, next ->
+            val piece = next.trim()
             when {
-                out.isEmpty() -> next.trim()
-                out.endsWith("-") && next.firstOrNull()?.isLowerCase() == true -> out.dropLast(1) + next.trim()
-                else -> "$out ${next.trim()}"
+                out.isEmpty() -> piece
+                piece.isEmpty() -> out
+                out.endsWith("-") && piece.firstOrNull()?.isLowerCase() == true -> out.dropLast(1) + piece
+                // Japanese and Chinese are written without spaces. A space invented at a line wrap
+                // changes the text the translator reads and the key it is cached under.
+                glued(out.last()) && glued(piece.first()) -> out + piece
+                else -> "$out $piece"
             }
         }
+
+        /** Scripts that carry no spaces of their own. Korean is written with them and is not here. */
+        private fun glued(c: Char) = c in '\u3000'..'\u303F' || c in '\u3040'..'\u30FF' ||
+            c in '\u3400'..'\u4DBF' || c in '\u4E00'..'\u9FFF' || c in '\uFF01'..'\uFF60'
     }
 }
