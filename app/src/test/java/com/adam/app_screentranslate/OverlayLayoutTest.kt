@@ -117,6 +117,55 @@ class OverlayLayoutTest {
         assertEquals(0f, overlap(grown.box, placements.first { it.id == 2L }.box), 0f)
     }
 
+    @Test fun cardNeverGrowsOffTheInterfacePlate() {
+        // A subtitle on a dialog bar: the translation is far too long for the bar, and the artwork
+        // around it is not a place a card may spill onto.
+        val source = Box(300f, 900f, 900f, 950f)
+        val plate = Box(240f, 860f, 960f, 1000f)
+        val texts = mapOf(3L to "Эта комната выглядит совсем иначе. Вероятно, это койка охранников, и ключ должен быть где-то здесь")
+        val placement = LabelLayout.place(
+            listOf(LabelLayout.Request(3, source, 2, bounds = plate)),
+            2400f, 1080f, style, metrics(texts)).single()
+        assertTrue("Card must stay on the plate", placement.box.left >= plate.left - .5f)
+        assertTrue("Card must stay on the plate", placement.box.right <= plate.right + .5f)
+        assertTrue("Card must stay on the plate", placement.box.bottom <= plate.bottom + .5f)
+        assertTrue("The card still covers its own line", overlap(placement.box, source) > source.area * .9f)
+    }
+
+    @Test fun tiltedTextGetsATurnedCardOfItsOwnSize() {
+        // What the recognizer reports for a line of about 300x40 turned by 15 degrees.
+        val source = Box(1000f, 500f, 1300.2f, 616.3f)
+        val texts = mapOf(5L to "Внутренние коммуникации")
+        val placement = LabelLayout.place(listOf(LabelLayout.Request(5, source, 1, angle = 15f)),
+            2400f, 1080f, style, metrics(texts)).single()
+        assertEquals("The card is turned with the text", 15f, placement.angle, 0f)
+        // The upright box around tilted text is far taller than the text; the card is not.
+        assertTrue("Card follows the text, not the upright box around it", placement.box.height < 60f)
+        assertEquals("A turned card keeps the centre of the text",
+            (source.left + source.right) / 2f, (placement.box.left + placement.box.right) / 2f, .5f)
+        assertEquals((source.top + source.bottom) / 2f, (placement.box.top + placement.box.bottom) / 2f, .5f)
+    }
+
+    @Test fun aReportedWobbleIsNotATilt() {
+        val source = Box(1000f, 500f, 1300f, 560f)
+        val texts = mapOf(6L to "Неопознанные связи")
+        val placement = LabelLayout.place(listOf(LabelLayout.Request(6, source, 1, angle = 2f)),
+            2400f, 1080f, style, metrics(texts)).single()
+        assertEquals(0f, placement.angle, 0f)
+        assertEquals(source.left - style.padding, placement.box.left, .5f)
+    }
+
+    @Test fun growthPrefersFlatInterfaceOverArtwork() {
+        // Equal room on both sides of the text, but the left half of the screen is artwork.
+        val source = Box(600f, 500f, 900f, 540f)
+        val texts = mapOf(9L to "Длинный перевод короткой строки, которому нужно куда-то расти")
+        val artwork = Box(0f, 0f, 600f, 1080f)
+        val placement = LabelLayout.place(
+            listOf(LabelLayout.Request(9, source, 1)), 1500f, 1080f, style, metrics(texts)
+        ) { box -> if (overlap(box, artwork) > box.area * .5f) 0f else 1f }.single()
+        assertTrue("The card must not spread over the artwork", placement.box.left >= artwork.right - style.padding - .5f)
+    }
+
     @Test fun mapsLetterboxedFrameBackToScreenPixels() {
         // Portrait capture surface still mirroring a landscape display: content is centred with bars.
         val mapped = FrameMapping.toScreen(Box(0f, 957f, 1080f, 1443f), 1080, 2400, 2400, 1080)

@@ -80,7 +80,8 @@ class TextBlockReconstructor {
             } else block.lines.map { line ->
                 val text = TextNormalizer.harmonizeScript(line.text)
                 block.copy(originalText = text, boundingBox = line.box, lines = listOf(line),
-                    confidence = line.confidence ?: block.confidence, script = ScriptDetector.detect(text))
+                    confidence = line.confidence ?: block.confidence, script = ScriptDetector.detect(text),
+                    angle = line.angle)
             }
         }
         for (block in candidates.filter { TextNormalizer.isTranslatable(it.originalText) && (it.confidence ?: 1f) >= .55f }
@@ -96,7 +97,8 @@ class TextBlockReconstructor {
                 if (canMerge(a, b, mode)) {
                     val text = joinLines(listOf(a.originalText, b.originalText))
                     result[i] = a.copy(originalText = text, boundingBox = a.boundingBox.union(b.boundingBox),
-                        lines = a.lines + b.lines, script = ScriptDetector.detect(text))
+                        lines = a.lines + b.lines, script = ScriptDetector.detect(text),
+                        paragraph = if (a.paragraph == b.paragraph) a.paragraph else -1)
                     result.removeAt(j)
                     changed = true
                     break@outer
@@ -155,21 +157,45 @@ class TextBlockReconstructor {
         val ah = a.lines.map { it.box.height }.average().takeUnless { it.isNaN() }?.toFloat() ?: ra.height
         val bh = b.lines.map { it.box.height }.average().takeUnless { it.isNaN() }?.toFloat() ?: rb.height
         val h = (ah + bh) / 2f
-        val gap = rb.top - ra.bottom
-        if (gap < -h * .15f || gap > h * mode.gap || max(ah, bh) / min(ah, bh) > 1.45f) return false
         if (a.lines.any { abs(it.angle) > 15f } || b.lines.any { abs(it.angle) > 15f }) return false
-        val overlapX = (min(ra.right, rb.right) - max(ra.left, rb.left)).coerceAtLeast(0f) / min(ra.width, rb.width)
-        if (overlapX < .65f || abs(ra.left - rb.left) > h * .8f) return false
         if (a.script != b.script && a.script != TextScript.MIXED && b.script != TextScript.MIXED) return false
         val first = a.originalText.trim(); val second = b.originalText.trim()
-        if (first.lastOrNull() in listOf('.', '!', '?', '。', '！', '？', ':')) return false
-        // Short title-case labels are separate controls, even at tight line spacing.
+        if (first.lastOrNull() in SENTENCE_END) return false
+        /*
+         * Geometry alone cannot tell the last line of a subtitle from the row of buttons under it,
+         * so the thresholds below have to stay tight — and a wrapped sentence whose tail is one
+         * short word then falls outside every one of them. Two things do know better: the paragraph
+         * the recognizer itself reported, and the sentence that plainly has not ended yet. Where one
+         * of them speaks, the geometry only has to be plausible instead of textbook.
+         */
+        val related = (a.paragraph >= 0 && a.paragraph == b.paragraph) || continues(first, second)
+        val gap = rb.top - ra.bottom
+        if (gap < -h * .15f || gap > h * mode.gap * (if (related) 1.8f else 1f)) return false
+        if (max(ah, bh) / min(ah, bh) > (if (related) 1.9f else 1.45f)) return false
+        val overlapX = (min(ra.right, rb.right) - max(ra.left, rb.left)).coerceAtLeast(0f) / min(ra.width, rb.width)
+        if (overlapX < (if (related) .3f else .65f)) return false
+        if (abs(ra.left - rb.left) > h * (if (related) 1.6f else .8f)) return false
+        // Short title-case labels are separate controls, even at tight line spacing and even when
+        // the recognizer read them as one paragraph. This is what keeps a menu a menu.
         val labelA = first.split(' ').size <= 3 && first.length < 24
         val labelB = second.split(' ').size <= 3 && second.length < 24
         if (labelA && labelB && first.firstOrNull()?.isUpperCase() == true && second.firstOrNull()?.isUpperCase() == true) return false
         return true
     }
+
+    /**
+     * Whether [second] reads as the continuation of [first]. A line that ends mid phrase and one
+     * that opens in lower case are the same sentence wrapped by the game's own text box; translating
+     * the halves apart produces two wrong translations instead of one right one.
+     */
+    private fun continues(first: String, second: String): Boolean {
+        val end = first.lastOrNull() ?: return false
+        val start = second.firstOrNull() ?: return false
+        if (end in SENTENCE_END) return false
+        return start.isLowerCase() || end == ',' || end == '-' || end == '—'
+    }
     companion object {
+        private val SENTENCE_END = listOf('.', '!', '?', '。', '！', '？', ':')
         fun joinLines(lines: List<String>): String = lines.fold("") { out, next ->
             when {
                 out.isEmpty() -> next.trim()

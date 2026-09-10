@@ -28,10 +28,10 @@ class OCRManager(private val context: Context) : AutoCloseable {
         // ML Kit tasks cannot be cancelled. Wait for native readers before recycling the Bitmap.
         val raw = withContext(NonCancellable) {
             supervisorScope {
-                models.map { model -> async {
+                models.mapIndexed { modelIndex, model -> async {
                     try {
-                        model.process(InputImage.fromBitmap(bitmap, 0)).await().textBlocks.mapNotNull { b ->
-                            val rect = b.boundingBox ?: return@mapNotNull null
+                        model.process(InputImage.fromBitmap(bitmap, 0)).await().textBlocks.mapIndexedNotNull { blockIndex, b ->
+                            val rect = b.boundingBox ?: return@mapIndexedNotNull null
                             val lines = b.lines.mapNotNull { l ->
                                 val r = l.boundingBox ?: return@mapNotNull null
                                 OcrLine(l.text, Box(r.left.toFloat(), r.top.toFloat(), r.right.toFloat(), r.bottom.toFloat()),
@@ -42,6 +42,10 @@ class OCRManager(private val context: Context) : AutoCloseable {
                             val text = TextBlockReconstructor.joinLines(lines.map { it.text }).ifBlank { b.text }
                             ScreenTextBlock(0, text, Box(rect.left.toFloat(), rect.top.toFloat(), rect.right.toFloat(), rect.bottom.toFloat()),
                                 lines = lines, script = ScriptDetector.detect(text),
+                                angle = lines.map { it.angle }.sorted().let { a -> if (a.isEmpty()) 0f else a[a.size / 2] },
+                                // Which paragraph the recognizer put these lines in. Its own grouping
+                                // is evidence the geometry alone cannot provide; models never share ids.
+                                paragraph = modelIndex * PARAGRAPHS_PER_MODEL + blockIndex,
                                 confidence = lines.mapNotNull { it.confidence }.average().takeUnless { it.isNaN() }?.toFloat())
                         }
                     } catch (e: Exception) { emptyList() }
@@ -84,4 +88,5 @@ class OCRManager(private val context: Context) : AutoCloseable {
         return total / count.coerceAtLeast(1)
     }
     override fun close() { latin.close(); japanese.close(); korean.close(); language.close() }
+    private companion object { const val PARAGRAPHS_PER_MODEL = 100_000 }
 }

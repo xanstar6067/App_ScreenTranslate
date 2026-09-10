@@ -7,10 +7,14 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class TextPipelineTest {
-    private fun block(text: String, y: Float, x: Float = 0f, width: Float = 200f): ScreenTextBlock {
+    private fun block(text: String, y: Float, x: Float = 0f, width: Float = 200f, paragraph: Int = -1): ScreenTextBlock {
         val box = Box(x, y, x+width, y+20)
-        return ScreenTextBlock(y.toLong(), text, box, listOf(OcrLine(text, box)), script = ScriptDetector.detect(text))
+        return ScreenTextBlock(y.toLong(), text, box, listOf(OcrLine(text, box)),
+            script = ScriptDetector.detect(text), paragraph = paragraph)
     }
+    private fun line(text: String, box: Box, paragraph: Int = -1) = ScreenTextBlock(
+        box.top.toLong(), text, box, listOf(OcrLine(text, box)),
+        script = ScriptDetector.detect(text), paragraph = paragraph)
     @Test fun joinsParagraphAcrossOcrBlocks() {
         val result = TextBlockReconstructor().reconstruct(listOf(
             block("We have to leave", 0f), block("this place before", 26f), block("the sun rises.", 52f)), MergeMode.NORMAL)
@@ -18,6 +22,32 @@ class TextPipelineTest {
         assertEquals("We have to leave this place before the sun rises.", result.single().originalText)
         assertEquals(72f, result.single().boundingBox.bottom)
     }
+    @Test fun keepsAWrappedSentenceTogetherWhenItsTailIsOneShortWord() {
+        // A game subtitle: generous line spacing, and a last line that is one word with neither
+        // descenders nor width. Every geometric threshold alone calls these two separate texts.
+        val result = TextBlockReconstructor().reconstruct(listOf(
+            line("Look, it's a lift! We'll get to the top floor with", Box(886f, 672f, 1637f, 706f)),
+            line("this.", Box(886f, 730f, 955f, 750f))), MergeMode.NORMAL)
+        assertEquals(1, result.size)
+        assertEquals("Look, it's a lift! We'll get to the top floor with this.", result.single().originalText)
+    }
+
+    @Test fun theRecognizersOwnParagraphIsNotEnoughToGlueAMenu() {
+        // One native block can hold a whole menu; its grouping must not override what the text says.
+        val result = TextBlockReconstructor().reconstruct(listOf(
+            block("New Game", 0f, paragraph = 7), block("Settings", 30f, paragraph = 7),
+            block("Exit", 60f, paragraph = 7)), MergeMode.AGGRESSIVE)
+        assertEquals(3, result.size)
+    }
+
+    @Test fun theRecognizersOwnParagraphSurvivesWideLineSpacing() {
+        // Japanese carries no letter case, so only the reported paragraph can vouch for the wrap.
+        val result = TextBlockReconstructor().reconstruct(listOf(
+            line("エレベーターだ、これで最上階まで", Box(400f, 600f, 1000f, 640f), paragraph = 3),
+            line("行ける", Box(400f, 672f, 560f, 704f), paragraph = 3)), MergeMode.NORMAL)
+        assertEquals(1, result.size)
+    }
+
     @Test fun preservesSeparateMenuButtons() {
         val result = TextBlockReconstructor().reconstruct(listOf(
             block("New Game", 0f), block("Settings", 26f), block("Exit", 52f)), MergeMode.AGGRESSIVE)

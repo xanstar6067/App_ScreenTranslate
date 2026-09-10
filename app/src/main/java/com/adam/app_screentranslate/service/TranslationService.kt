@@ -13,6 +13,8 @@ import android.widget.Toast
 import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
 import com.adam.app_screentranslate.*
+import com.adam.app_screentranslate.capture.FrameAnalysis
+import com.adam.app_screentranslate.capture.FrameAnalyzer
 import com.adam.app_screentranslate.capture.FrameMapping
 import com.adam.app_screentranslate.capture.ScreenCaptureManager
 import com.adam.app_screentranslate.model.*
@@ -142,9 +144,13 @@ class TranslationService : Service() {
                 overlay?.state(ControlState.PROCESSING)
                 val frameWidth = bitmap.width
                 val frameHeight = bitmap.height
+                var composition = FrameAnalysis.none
                 val recognized = try {
                     withContext(Dispatchers.Default) {
                         if (ScreenCaptureManager.isBlank(bitmap)) throw CaptureUnavailable()
+                        // Reading the frame happens here and only here: what leaves this block is a
+                        // coarse colour grid and recognized text, never the picture itself.
+                        composition = FrameAnalyzer.analyze(bitmap)
                         OCRManager(this@TranslationService).use { it.recognize(bitmap, settings.source, settings.merge) }
                     }
                 } finally { bitmap.recycle() }
@@ -152,6 +158,8 @@ class TranslationService : Service() {
                 // Recognition works in frame pixels, the overlay draws in screen pixels.
                 val screen = ScreenCaptureManager.screenSize(this@TranslationService)
                 val blocks = recognized.map { it.onScreen(frameWidth, frameHeight, screen.first, screen.second) }
+                overlay?.setComposition(composition.onScreen(
+                    FrameMapping.transform(frameWidth, frameHeight, screen.first, screen.second)))
                 if (blocks.isEmpty()) {
                     notice("Текст на экране не найден")
                 } else if (settings.ocrPreview) {

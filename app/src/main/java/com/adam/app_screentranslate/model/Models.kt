@@ -25,6 +25,10 @@ data class ScreenTextBlock(
     val id: Long, val originalText: String, val boundingBox: Box,
     val lines: List<OcrLine> = emptyList(), val detectedLanguage: String? = null,
     val script: TextScript = TextScript.UNKNOWN, val confidence: Float? = null,
+    /** Tilt of the recognized text in degrees, as reported by the recognizer. */
+    val angle: Float = 0f,
+    /** Paragraph the recognizer itself put this text in; -1 when it reported no grouping. */
+    val paragraph: Int = -1,
     val translatedText: String? = null, val backgroundLuminance: Float = .5f
 )
 data class TranslationRequest(val id: Long, val text: String, val source: String, val target: String)

@@ -6,6 +6,7 @@ import android.graphics.*
 import android.hardware.input.InputManager
 import android.os.Build
 import android.view.*
+import com.adam.app_screentranslate.capture.FrameAnalysis
 import com.adam.app_screentranslate.capture.ScreenCaptureManager
 import com.adam.app_screentranslate.data.SettingsManager
 import com.adam.app_screentranslate.model.*
@@ -104,6 +105,8 @@ class OverlayController(
     fun onRotation() { clear(); configure(config) }
     fun state(state: ControlState) { button.state = state; button.visibility = View.VISIBLE; button.invalidate() }
     fun hideControl() { button.visibility = View.INVISIBLE }
+    /** What the frame behind the translations looks like; released together with them. */
+    fun setComposition(value: FrameAnalysis) { translation.composition = value }
     fun showTranslations(blocks: List<ScreenTextBlock>) {
         translation.render(blocks, config, size.first, size.second)
         if (!translationAttached) {
