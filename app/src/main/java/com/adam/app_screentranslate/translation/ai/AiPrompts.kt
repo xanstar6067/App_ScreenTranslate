@@ -76,14 +76,33 @@ object AiPrompts {
      * A placeholder that resolves to nothing takes its whole line with it. Leaving "Glossary:" with
      * an empty glossary behind, or a raw {{GLOSSARY}} in the prompt, both teach the model to answer
      * about something that was never supplied.
+     *
+     * Scanned by hand rather than matched: Android's regex engine is stricter about braces than the
+     * desktop JVM the tests run on, so a pattern over {{...}} compiles here and throws on a phone.
      */
     fun render(template: String, values: Map<String, String>): String {
-        val placeholder = Regex("""\{\{\s*([A-Z_]+)\s*}}""")
-        val lines = template.lines().mapNotNull { line ->
-            val found = placeholder.findAll(line).map { it.groupValues[1] }.toList()
-            if (found.any { values[it].isNullOrBlank() }) null
-            else placeholder.replace(line) { values.getValue(it.groupValues[1]) }
+        val text = StringBuilder()
+        for (line in template.lines()) {
+            val rendered = renderLine(line, values) ?: continue
+            text.append(rendered).append('\n')
         }
-        return lines.joinToString("\n").replace(Regex("\n{3,}"), "\n\n").trim()
+        var result = text.toString()
+        while (result.contains("\n\n\n")) result = result.replace("\n\n\n", "\n\n")
+        return result.trim()
+    }
+
+    private fun renderLine(line: String, values: Map<String, String>): String? {
+        val out = StringBuilder()
+        var at = 0
+        while (true) {
+            val open = line.indexOf("{{", at)
+            if (open < 0) return out.append(line, at, line.length).toString()
+            val close = line.indexOf("}}", open + 2)
+            if (close < 0) return out.append(line, at, line.length).toString()
+            val value = values[line.substring(open + 2, close).trim()]
+            if (value.isNullOrBlank()) return null
+            out.append(line, at, open).append(value)
+            at = close + 2
+        }
     }
 }

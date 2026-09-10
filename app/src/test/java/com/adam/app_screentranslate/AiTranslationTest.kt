@@ -66,6 +66,23 @@ class AiTranslationTest {
         assertEquals("B", AiPrompts.render("A {{NOPE}}\nB", emptyMap()))
     }
 
+    @Test fun substitutionHandlesRepeats_spacing_andStrayBraces() {
+        val values = mapOf("A" to "1", "B" to "2")
+        assertEquals("1 and 2 and 1", AiPrompts.render("{{A}} and {{ B }} and {{A}}", values))
+        // A brace that opens nothing is text, not a syntax error.
+        assertEquals("use {} and { {A}", AiPrompts.render("use {} and { {A}", values))
+        assertEquals("half {{A", AiPrompts.render("half {{A", values))
+        // Blank runs left by dropped lines collapse instead of stacking up.
+        assertEquals("x\n\ny", AiPrompts.render("x\n\n{{GONE}}\n{{GONE}}\n\ny", values))
+    }
+
+    @Test fun responsesApiIsPreferredForGrok4AndNewer() {
+        listOf("grok-4.6", "grok-4", "grok-4.20-0309-reasoning", "GROK-9")
+            .forEach { assertTrue(it, XaiClient.prefersResponsesApi(it)) }
+        listOf("grok-3", "grok-2-1212", "grok-beta", "some-other-model")
+            .forEach { assertFalse(it, XaiClient.prefersResponsesApi(it)) }
+    }
+
     @Test fun repairSwitchRewritesTheJoiningRule() {
         val on = AiPrompts.system("game", "auto-detect", "Russian", repair = true)
         val off = AiPrompts.system("game", "auto-detect", "Russian", repair = false)

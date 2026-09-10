@@ -143,10 +143,8 @@ class XaiClient(private val base: String = "https://api.x.ai/v1") : AiEngine {
         return report to usable
     }
 
-    /** grok-4 and newer answer on the Responses API; older families on chat completions. */
     private fun endpointOrder(model: String): List<Boolean> =
-        if (Regex("""^grok-([4-9]|\d{2,})""").containsMatchIn(model.lowercase())) listOf(true, false)
-        else listOf(false, true)
+        if (prefersResponsesApi(model)) listOf(true, false) else listOf(false, true)
 
     private fun build(token: String, model: String, system: String, user: String,
                       transport: Transport, viaResponses: Boolean): Request {
@@ -259,9 +257,21 @@ class XaiClient(private val base: String = "https://api.x.ai/v1") : AiEngine {
     private fun JSONArray?.strings(): List<String> =
         if (this == null) emptyList() else (0 until length()).mapNotNull { optString(it).ifBlank { null } }
 
-    private companion object {
+    companion object {
+        /**
+         * grok-4 and newer answer on the Responses API; older families on chat completions. Read by
+         * hand rather than by pattern — Android's regex engine is stricter than the desktop JVM the
+         * tests run on, and a model id is not worth that risk.
+         */
+        fun prefersResponsesApi(model: String): Boolean {
+            val lower = model.lowercase()
+            if (!lower.startsWith("grok-")) return false
+            val major = lower.removePrefix("grok-").takeWhile { it.isDigit() }.toIntOrNull() ?: return false
+            return major >= 4
+        }
+
         /** Two blocks of one broken sentence: exactly what the schema exists to put back together. */
-        val PROBE = listOf(
+        private val PROBE = listOf(
             ScreenTextBlock(1, "Compensation o", Box(0f, 0f, 100f, 20f)),
             ScreenTextBlock(2, "f maintenance", Box(0f, 20f, 100f, 40f)))
     }
