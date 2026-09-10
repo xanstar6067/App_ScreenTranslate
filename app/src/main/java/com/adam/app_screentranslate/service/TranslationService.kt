@@ -61,7 +61,7 @@ class TranslationService : Service() {
             capture = ScreenCaptureManager(this, { projectionLost() }, { invalidateFrame() }).also {
                 it.start(intent?.getIntExtra("resultCode", Activity.RESULT_CANCELED) ?: Activity.RESULT_CANCELED, data)
             }
-            if (overlay == null) overlay = OverlayController(this, app.settings, { tap() }, { openSettings() }).also { it.show() }
+            if (overlay == null) overlay = OverlayController(this, app.settings, { tap() }, { longPress() }).also { it.show() }
             else overlay?.ensureAttached()
             registerScreenEvents()
             app.session.value = SessionState(SessionPhase.ACTIVE)
@@ -85,12 +85,25 @@ class TranslationService : Service() {
         return START_NOT_STICKY
     }
     private fun tap() {
+        // A tap is how edit mode ends; clearing the translation from inside it would be a surprise.
+        if (overlay?.isEditing == true) { overlay?.setEditing(false); return }
         when (state) {
             ControlState.PROCESSING -> Unit
             ControlState.PAUSED -> startActivity(resumeIntent())
             ControlState.TRANSLATED -> { overlay?.clear(); setState(ControlState.READY) }
             ControlState.READY -> translateScreen()
         }
+    }
+    /**
+     * Placement is automatic, and on a crowded game screen it can still put a card badly. Holding
+     * the button while translations are up hands the screen over to the user: the overlay takes
+     * touches, every card can be dragged, and a tap gives the screen back to the app below.
+     */
+    private fun longPress() {
+        if (state != ControlState.TRANSLATED) { openSettings(); return }
+        val editing = overlay?.isEditing != true
+        overlay?.setEditing(editing)
+        if (editing) notice("Перетащите карточки. Нажмите кнопку, чтобы выйти")
     }
     private fun setState(value: ControlState) {
         state = value

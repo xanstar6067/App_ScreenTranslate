@@ -14,11 +14,14 @@ class OverlayLayoutTest {
         hardMinTextSize = 7f, minCardWidth = 64f)
 
     /** Stand-in for text metrics: glyphs are half as wide as they are tall, lines stack at 1.2. */
-    private fun metrics(texts: Map<Long, String>) = LabelLayout.Measure { id, width, size ->
-        val perLine = (width / (size * .5f)).toInt().coerceAtLeast(1)
-        val text = texts.getValue(id)
-        val lines = ((text.length + perLine - 1) / perLine).coerceAtLeast(1)
-        lines * size * 1.2f
+    private fun metrics(texts: Map<Long, String>) = object : LabelLayout.Measure {
+        override fun height(id: Long, width: Float, textSize: Float): Float {
+            val perLine = (width / (textSize * .5f)).toInt().coerceAtLeast(1)
+            val text = texts.getValue(id)
+            val lines = ((text.length + perLine - 1) / perLine).coerceAtLeast(1)
+            return lines * textSize * 1.2f
+        }
+        override fun lineWidth(id: Long, textSize: Float) = texts.getValue(id).length * textSize * .5f
     }
 
     private fun overlap(a: Box, b: Box) = (min(a.right, b.right) - max(a.left, b.left)).coerceAtLeast(0f) *
@@ -83,6 +86,35 @@ class OverlayLayoutTest {
         assertTrue(placement.box.bottom <= 1080f)
         assertTrue("The whole translation stays readable", placement.textSize >= style.hardMinTextSize)
         assertTrue("The card stays next to its text", abs(placement.box.left - source.left) < 400f)
+    }
+
+    @Test fun captionShrinksInsteadOfBreakingIntoSyllables() {
+        // A game button: a narrow box whose Russian label is far longer than the English original.
+        val source = Box(2200f, 20f, 2260f, 80f)
+        val texts = mapOf(4L to "Пропустить")
+        val measure = metrics(texts)
+        val placement = LabelLayout.place(listOf(LabelLayout.Request(4, source, 1)),
+            2400f, 1080f, style, measure).single()
+        assertTrue("The label must stay on one line", measure.lineWidth(4, placement.textSize) <= placement.textWidth + .5f)
+        assertTrue("Fitting one line is worth some shrinking", placement.textSize < style.maxTextSize)
+        assertTrue("But not below the caption floor", placement.textSize >= style.singleLineMinTextSize)
+        assertTrue("The card stays on its button", overlap(placement.box, source) > source.area * .9f)
+    }
+
+    @Test fun neighbourStandingDiagonallyIsNotCovered() {
+        // The card grows right and down at once; a box on that diagonal used to be ignored.
+        val long = Box(100f, 100f, 300f, 140f)
+        val diagonal = Box(360f, 200f, 560f, 240f)
+        val texts = mapOf(
+            1L to "Очень длинный перевод, которому не хватает исходной рамки и который вынужден расти в свободное место рядом с ней",
+            2L to "Соседняя надпись")
+        val placements = LabelLayout.place(
+            listOf(LabelLayout.Request(1, long, 2), LabelLayout.Request(2, diagonal, 1)),
+            1200f, 800f, style, metrics(texts))
+        val grown = placements.first { it.id == 1L }
+        assertTrue("The translation had to grow", grown.box.area > long.area * 1.5f)
+        assertEquals("A diagonal neighbour blocks growth too", 0f, overlap(grown.box, diagonal), 0f)
+        assertEquals(0f, overlap(grown.box, placements.first { it.id == 2L }.box), 0f)
     }
 
     @Test fun mapsLetterboxedFrameBackToScreenPixels() {

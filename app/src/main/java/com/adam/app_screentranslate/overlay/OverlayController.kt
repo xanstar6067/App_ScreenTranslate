@@ -25,12 +25,41 @@ class OverlayController(
     private var config = settings.settings.value
     private val controlParams = params(56, 56, false)
     private val translationParams = params(-1, -1, true)
+    private var editing = false
     init {
-        // NOT_TOUCHABLE windows still count as occluding windows on Android 12+.
-        translationParams.alpha = if (Build.VERSION.SDK_INT >= 31)
-            context.getSystemService(InputManager::class.java).maximumObscuringOpacityForTouch.coerceAtMost(.8f) else 1f
+        applyTouchMode()
         installGestures()
     }
+    /**
+     * Two modes for one window. Normally it passes every touch to the app below, and Android 12+
+     * counts even such a window as occluding, so its opacity is capped. In edit mode it takes the
+     * touches instead, the cards can be dragged, and the cap no longer applies.
+     */
+    private fun applyTouchMode() {
+        translationParams.flags = if (editing)
+            translationParams.flags and WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE.inv()
+        else translationParams.flags or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
+        translationParams.alpha = if (!editing && Build.VERSION.SDK_INT >= 31)
+            context.getSystemService(InputManager::class.java).maximumObscuringOpacityForTouch.coerceAtMost(.8f) else 1f
+    }
+    /** Edit mode only makes sense while translations are on screen; it never outlives them. */
+    fun setEditing(value: Boolean) {
+        val target = value && translationAttached
+        if (editing == target) return
+        editing = target
+        translation.editing = editing
+        applyTouchMode()
+        if (translationAttached) runCatching { wm.updateViewLayout(translation, translationParams) }
+        // The control must keep receiving touches above a window that now takes them.
+        if (controlAttached) {
+            runCatching { wm.removeViewImmediate(button) }
+            controlAttached = false
+            ensureAttached()
+        }
+        button.editing = editing
+        button.invalidate()
+    }
+    val isEditing get() = editing
     // Capture coordinates are physical pixels from the left edge, regardless of locale.
     @SuppressLint("RtlHardcoded")
     private fun params(w: Int, h: Int, passThrough: Boolean) = WindowManager.LayoutParams(
@@ -88,6 +117,8 @@ class OverlayController(
         }
     }
     fun clear() {
+        setEditing(false)
+        translation.reset()
         if (translationAttached) { runCatching { wm.removeViewImmediate(translation) }; translationAttached = false }
     }
     private fun clamp() {
@@ -133,6 +164,7 @@ class OverlayController(
     }
     private class ControlView(context: Context) : View(context) {
         var visualOpacity = 1f
+        var editing = false
         var state = ControlState.READY
             set(value) {
                 field = value
@@ -148,9 +180,23 @@ class OverlayController(
             val layer = canvas.saveLayerAlpha(0f, 0f, width.toFloat(), height.toFloat(), (visualOpacity * 255).roundToInt())
             val r = width/2f
             paint.style = Paint.Style.FILL
-            paint.color = if (state == ControlState.PAUSED) Color.rgb(255, 202, 124) else Color.rgb(92, 237, 196)
+            paint.color = when {
+                editing -> Color.rgb(140, 200, 230)
+                state == ControlState.PAUSED -> Color.rgb(255, 202, 124)
+                else -> Color.rgb(92, 237, 196)
+            }
             canvas.drawCircle(r, height/2f, r-2, paint)
             paint.color = Color.rgb(10, 30, 39)
+            if (editing) {
+                // A tick, because the only thing left to do in edit mode is to finish it.
+                paint.style = Paint.Style.STROKE; paint.strokeWidth = width*.08f
+                paint.strokeCap = Paint.Cap.ROUND; paint.strokeJoin = Paint.Join.ROUND
+                canvas.drawLines(floatArrayOf(
+                    width*.3f, height*.52f, width*.44f, height*.66f,
+                    width*.44f, height*.66f, width*.71f, height*.36f), paint)
+                canvas.restoreToCount(layer)
+                return
+            }
             when(state) {
                 ControlState.READY -> {
                     paint.typeface = Typeface.create("sans-serif-black", Typeface.BOLD)
