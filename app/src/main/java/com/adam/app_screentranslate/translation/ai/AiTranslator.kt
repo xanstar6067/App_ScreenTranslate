@@ -16,16 +16,22 @@ data class AiOutcome(val untranslated: List<ScreenTextBlock>, val reason: String
  */
 class AiTranslator(private val client: AiEngine = XaiClient()) {
 
+    /**
+     * [game] is the context the caller decided to send: null when detection is off, the profile is
+     * disabled or the context switch is off. What is in it goes out; nothing else about the game does.
+     */
     suspend fun translate(
         blocks: List<ScreenTextBlock>, settings: AppSettings, ai: AiSettings, token: String,
-        cache: TranslationStore?, onResult: suspend (ScreenTextBlock) -> Unit
+        cache: TranslationStore?, game: GameContext? = null, onResult: suspend (ScreenTextBlock) -> Unit
     ): AiOutcome {
         if (token.isBlank()) return AiOutcome(blocks, "Не указан API-ключ ${ai.provider.label}.")
         if (ai.model.isBlank()) return AiOutcome(blocks, "Не выбрана модель ${ai.provider.label}.")
         val target = language(settings.target)
         val source = language(settings.source)
-        // "xai:" is what the cache already holds for Grok, so existing entries stay valid.
-        val provider = "${ai.provider.name.lowercase(Locale.ROOT)}:${ai.model}"
+        // "xai:" is what the cache already holds for Grok, so existing entries stay valid. A game
+        // context changes the translation, so it gets its own fingerprinted slot.
+        val provider = "${ai.provider.name.lowercase(Locale.ROOT)}:${ai.model}" +
+            (game?.let { "@" + AiContext.fingerprint(it) } ?: "")
         val pending = blocks.filter { it.detectedLanguage != settings.target }.toMutableList()
 
         // Merging makes a fragment depend on its neighbours, so a per-block cache stops being
@@ -40,10 +46,11 @@ class AiTranslator(private val client: AiEngine = XaiClient()) {
 
         val failed = mutableListOf<ScreenTextBlock>()
         var reason: String? = null
-        val system = AiPrompts.system(ai.prompt, source, target, ai.repair)
+        val system = AiPrompts.system(ai.prompt, source, target, ai.repair, game?.profile)
         val packets = batches(readingOrder(pending))
         for ((index, batch) in packets.withIndex()) {
-            val fragments = try { request(token, ai.model, system, batch, source, target, ai.repair) }
+            val glossary = game?.let { AiContext.relevant(it.glossary, batch.map { block -> block.originalText }) }.orEmpty()
+            val fragments = try { request(token, ai.model, system, batch, source, target, ai.repair, glossary) }
             catch (e: CancellationException) { throw e }
             catch (e: AiFormatException) { failed += batch; reason = e.reason; continue }
             catch (e: AiHttpException) {
@@ -87,9 +94,9 @@ class AiTranslator(private val client: AiEngine = XaiClient()) {
      */
     private suspend fun request(
         token: String, model: String, system: String, batch: List<ScreenTextBlock>,
-        source: String, target: String, repair: Boolean
+        source: String, target: String, repair: Boolean, glossary: List<GlossaryEntry>
     ): List<AiFragment> {
-        val payload = AiProtocol.payload(batch, source, target)
+        val payload = AiProtocol.payload(batch, source, target, glossary)
         return try { answer(token, model, system, payload, batch, repair) }
         catch (e: AiFormatException) {
             answer(token, model, system,

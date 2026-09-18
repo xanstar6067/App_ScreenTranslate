@@ -17,9 +17,11 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.runtime.*
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.lifecycleScope
+import com.adam.app_screentranslate.game.ForegroundApp
 import com.adam.app_screentranslate.model.*
 import com.adam.app_screentranslate.service.TranslationService
 import com.adam.app_screentranslate.ui.AiPanel
+import com.adam.app_screentranslate.ui.GamesPanel
 import com.adam.app_screentranslate.ui.HomeScreen
 import com.adam.app_screentranslate.ui.theme.App_ScreenTranslateTheme
 
@@ -64,10 +66,11 @@ class MainActivity : ComponentActivity() {
             val settings by app.settings.settings.collectAsState()
             val session by app.session.collectAsState()
             val permissions = remember(refresh, session.phase) { readPermissions() }
-            // Requests to xAI outlive recomposition, so the panel holds the activity's own scope.
+            // Requests to the AI provider outlive recomposition, so the panels hold the activity's own scope.
             val ai = remember { AiPanel(app.ai, lifecycleScope) }
+            val games = remember { GamesPanel(app.games, app, lifecycleScope) }
             App_ScreenTranslateTheme {
-                HomeScreen(settings, session, permissions, app.cache, ai,
+                HomeScreen(settings, session, permissions, app.cache, ai, games,
                     onSettings = app.settings::update, onToggle = { enable ->
                         if (enable) enableTranslator() else {
                             stopService(Intent(this, TranslationService::class.java))
@@ -81,7 +84,8 @@ class MainActivity : ComponentActivity() {
                             notifications.launch(Manifest.permission.POST_NOTIFICATIONS)
                         else startActivity(Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS).putExtra(Settings.EXTRA_APP_PACKAGE, packageName))
                     },
-                    onBattery = { openBatteryOptimization() }, onRefresh = { refresh++ })
+                    onBattery = { openBatteryOptimization() }, onUsageAccess = { openUsageAccess() },
+                    onRefresh = { refresh++ })
             }
         }
         handleAction(intent)
@@ -149,13 +153,27 @@ class MainActivity : ComponentActivity() {
         app.session.value = app.session.value.copy(
             message = "Откройте системные настройки батареи и снимите ограничение для Lenslate вручную.")
     }
+    /**
+     * Usage access is granted only in system settings. Some systems open Lenslate's own switch when
+     * given the package; the rest need the list.
+     */
+    private fun openUsageAccess() {
+        val direct = Intent(Settings.ACTION_USAGE_ACCESS_SETTINGS, Uri.parse("package:$packageName"))
+        for (intent in listOf(direct, Intent(Settings.ACTION_USAGE_ACCESS_SETTINGS))) {
+            if (runCatching { startActivity(intent) }.isSuccess) return
+        }
+        app.session.value = app.session.value.copy(
+            message = "Откройте в системных настройках «Доступ к истории использования» и разрешите его Lenslate.")
+    }
     private fun readPermissions(): PermissionStatus {
         val connectivity = getSystemService(ConnectivityManager::class.java)
         val capabilities = connectivity.getNetworkCapabilities(connectivity.activeNetwork)
         return PermissionStatus(Settings.canDrawOverlays(this),
             androidx.core.app.NotificationManagerCompat.from(this).areNotificationsEnabled(),
             capabilities?.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED) == true,
-            getSystemService(PowerManager::class.java).isIgnoringBatteryOptimizations(packageName))
+            getSystemService(PowerManager::class.java).isIgnoringBatteryOptimizations(packageName),
+            ForegroundApp.hasAccess(this))
     }
 }
-data class PermissionStatus(val overlay: Boolean, val notifications: Boolean, val network: Boolean, val battery: Boolean)
+data class PermissionStatus(val overlay: Boolean, val notifications: Boolean, val network: Boolean, val battery: Boolean,
+                            val usage: Boolean = false)

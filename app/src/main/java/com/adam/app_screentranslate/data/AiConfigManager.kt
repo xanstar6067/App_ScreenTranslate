@@ -36,7 +36,8 @@ class AiConfigManager(context: Context) {
         prefs.edit().putString("provider", value.provider.name)
             .putString(modelKey(value.provider), value.model)
             .putString("fallback", value.fallback.name)
-            .putBoolean("repair", value.repair).putString("prompt", value.prompt).apply()
+            .putBoolean("repair", value.repair).putString("prompt", value.prompt)
+            .putBoolean("context", value.context).apply()
         mutable.value = value
         if (value.provider != previous.provider) {
             // Everything provider-scoped follows the switch, including which model is selected.
@@ -84,7 +85,8 @@ class AiConfigManager(context: Context) {
             model = prefs.getString(modelKey(provider), "") ?: "",
             fallback = AiFallback.entries.firstOrNull { it.name == prefs.getString("fallback", null) } ?: AiFallback.AUTO,
             repair = prefs.getBoolean("repair", true),
-            prompt = prefs.getString("prompt", "game") ?: "game")
+            prompt = prefs.getString("prompt", "game") ?: "game",
+            context = prefs.getBoolean("context", true))
     }
 
     private fun readModels(provider: AiProvider): List<AiModelInfo> {

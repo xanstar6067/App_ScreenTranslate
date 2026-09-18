@@ -29,7 +29,11 @@ enum class BackgroundStyle(val label: String) { AUTO("Автоматически
 enum class ButtonSize(val label: String, val dp: Int) { SMALL("Маленький", 44), MEDIUM("Средний", 56), LARGE("Большой", 68) }
 enum class SessionPhase { OFF, STARTING, ACTIVE, PAUSED, ERROR }
 enum class ControlState { READY, PROCESSING, TRANSLATED, PAUSED }
-data class SessionState(val phase: SessionPhase = SessionPhase.OFF, val message: String = "", val control: ControlState = ControlState.READY)
+data class SessionState(
+    val phase: SessionPhase = SessionPhase.OFF, val message: String = "", val control: ControlState = ControlState.READY,
+    /** Title of the game the last translation was made in, when game detection found one. */
+    val game: String? = null
+)
 data class OcrElement(val text: String, val box: Box)
 data class OcrLine(val text: String, val box: Box, val elements: List<OcrElement> = emptyList(), val angle: Float = 0f, val confidence: Float? = null)
 data class ScreenTextBlock(
@@ -51,7 +55,9 @@ data class AppSettings(
     val merge: MergeMode = MergeMode.NORMAL, val background: BackgroundStyle = BackgroundStyle.AUTO,
     val opacity: Float = .9f, val textScale: Float = 1f, val buttonSize: ButtonSize = ButtonSize.MEDIUM,
     val cacheEnabled: Boolean = true, val buttonOpacity: Float = 1f, val ocrPreview: Boolean = false,
-    val mode: TranslationMode = TranslationMode.WEB
+    val mode: TranslationMode = TranslationMode.WEB,
+    /** Off by default: while it is off, usage statistics are never read at all. */
+    val gameDetection: Boolean = false
 )
 enum class AiProvider(val label: String) { XAI("xAI Grok"), GEMINI("Google Gemini") }
 /**
@@ -61,8 +67,43 @@ enum class AiProvider(val label: String) { XAI("xAI Grok"), GEMINI("Google Gemin
 data class AiSettings(
     val provider: AiProvider = AiProvider.XAI,
     val model: String = "", val fallback: AiFallback = AiFallback.AUTO,
-    val repair: Boolean = true, val prompt: String = "game"
+    val repair: Boolean = true, val prompt: String = "game",
+    /** Whether a detected game's name, notes and glossary go into the request. */
+    val context: Boolean = true
 )
+enum class GameOrigin(val label: String) { AUTO("Обнаружена автоматически"), MANUAL("Добавлена вручную") }
+/** Characters, factions and locations are names rather than words; the model is told which is which. */
+enum class TermKind(val label: String, val single: String, val wire: String) {
+    TERM("Термины", "Термин", "term"), CHARACTER("Персонажи", "Персонаж", "character"),
+    FACTION("Фракции", "Фракция", "faction"), LOCATION("Локации", "Локация", "location")
+}
+data class GlossaryEntry(
+    val term: String, val translation: String, val kind: TermKind = TermKind.TERM,
+    /** The term stays as it is in the translation, like a title or a brand. */
+    val keep: Boolean = false, val id: Long = 0
+) {
+    /** What the translation must contain for this term. */
+    val rendering get() = if (keep) term else translation
+}
+/**
+ * What Lenslate knows about one game. A null language or prompt means "as in the general settings":
+ * the profile overrides only what the user set in it.
+ */
+data class GameProfile(
+    val packageName: String, val label: String = "", val customName: String = "",
+    val origin: GameOrigin = GameOrigin.AUTO, val enabled: Boolean = true,
+    val firstSeen: Long = 0, val lastUsed: Long = 0,
+    val source: String? = null, val target: String? = null, val prompt: String? = null,
+    val notes: String = ""
+) {
+    val title get() = customName.ifBlank { label.ifBlank { packageName } }
+}
+/** The game one screen was captured in, with its whole glossary. */
+data class GameContext(val profile: GameProfile, val glossary: List<GlossaryEntry>)
+/** A disabled profile changes nothing: the screen is translated as if the game were unknown. */
+fun AppSettings.forGame(profile: GameProfile?): AppSettings =
+    if (profile == null || !profile.enabled) this
+    else copy(source = profile.source ?: source, target = profile.target ?: target)
 /** One model as the xAI models API describes it. Only what model choice actually needs. */
 data class AiModelInfo(
     val id: String, val aliases: List<String> = emptyList(),

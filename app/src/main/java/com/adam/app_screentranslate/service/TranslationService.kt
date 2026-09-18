@@ -21,6 +21,7 @@ import com.adam.app_screentranslate.model.*
 import com.adam.app_screentranslate.ocr.OCRManager
 import com.adam.app_screentranslate.overlay.OverlayController
 import com.adam.app_screentranslate.translation.TranslationManager
+import com.adam.app_screentranslate.game.ForegroundApp
 import com.adam.app_screentranslate.translation.ai.AiTranslator
 import com.adam.app_screentranslate.translation.ai.GeminiClient
 import com.adam.app_screentranslate.translation.ai.XaiClient
@@ -146,24 +147,32 @@ class TranslationService : Service() {
         if (processing?.isActive == true) return
         val previous = processing
         val frameGeneration = ++generation
-        val settings = app.settings.settings.value
+        val base = app.settings.settings.value
         setState(ControlState.PROCESSING)
         overlay?.clear()
         overlay?.hideControl()
         processing = scope.launch {
             previous?.join()
+            // Finding the game runs beside the capture; its languages are needed only once recognition starts.
+            val detecting = async(Dispatchers.IO) { detectGame(base) }
             val visible = mutableListOf<ScreenTextBlock>()
             try {
                 val bitmap = capture?.capture() ?: error("No projection")
                 overlay?.state(ControlState.PROCESSING)
+                val game = detecting.await()
+                val settings = base.forGame(game?.profile)
+                app.session.value = app.session.value.copy(game = game?.profile?.title)
                 val frameWidth = bitmap.width
                 val frameHeight = bitmap.height
                 var composition = FrameAnalysis.none
+                var dark = false
                 val recognized = try {
                     withContext(Dispatchers.Default) {
-                        if (ScreenCaptureManager.isBlank(bitmap)) throw CaptureUnavailable()
                         // Reading the frame happens here and only here: what leaves this block is a
                         // coarse colour grid and recognized text, never the picture itself.
+                        // Recognition always runs, even on a frame that looks black: it costs nothing
+                        // on the device, and a dark scene with one line of text is no protected window.
+                        dark = ScreenCaptureManager.isBlank(bitmap)
                         composition = FrameAnalyzer.analyze(bitmap)
                         engines().recognize(bitmap, settings.source, settings.merge)
                     }
@@ -175,7 +184,9 @@ class TranslationService : Service() {
                 overlay?.setComposition(composition.onScreen(
                     FrameMapping.transform(frameWidth, frameHeight, screen.first, screen.second)))
                 if (blocks.isEmpty()) {
-                    notice("Текст на экране не найден")
+                    // Only now, with recognition already done, is a black frame worth a word.
+                    notice(if (dark) "Текст не найден: кадр полностью чёрный. Возможно, приложение защищает экран от захвата."
+                        else "Текст на экране не найден")
                 } else if (settings.ocrPreview) {
                     visible += blocks.map { it.copy(translatedText = it.originalText) }
                     overlay?.showTranslations(visible)
@@ -191,9 +202,12 @@ class TranslationService : Service() {
                     }
                     var aiReason: String? = null
                     val errors = if (settings.mode == TranslationMode.AI) {
-                        val ai = app.ai.settings.value
+                        val general = app.ai.settings.value
+                        // A game's own style wins over the general prompt; its context goes only if allowed.
+                        val ai = game?.profile?.prompt?.let { general.copy(prompt = it) } ?: general
                         val token = withContext(Dispatchers.IO) { app.ai.token() }
-                        val outcome = aiTranslator(ai.provider).translate(blocks, settings, ai, token, app.cache, emit)
+                        val outcome = aiTranslator(ai.provider).translate(blocks, settings, ai, token, app.cache,
+                            game?.takeIf { ai.context }, emit)
                         aiReason = outcome.reason
                         val fallback = ai.fallback.provider()
                         when {
@@ -210,7 +224,6 @@ class TranslationService : Service() {
                     else if (visible.isEmpty()) notice("Текст уже на выбранном языке")
                 }
             } catch (e: CancellationException) { throw e }
-            catch (_: CaptureUnavailable) { notice("Не удалось получить изображение. Возможно, приложение запрещает захват содержимого.") }
             catch (_: Exception) { notice("Не удалось обработать экран. Попробуйте ещё раз.") }
             finally {
                 if (frameGeneration == generation && state != ControlState.PAUSED)
@@ -225,6 +238,20 @@ class TranslationService : Service() {
             lines = lines.map { it.copy(box = FrameMapping.toScreen(it.box, frameWidth, frameHeight, screenWidth, screenHeight)) })
     }
     private fun engines(): OCRManager = ocr ?: OCRManager(this).also { ocr = it }
+
+    /**
+     * The game the screen belongs to, when detection is on and its profile is enabled. With detection
+     * off, usage statistics are not touched at all. Nothing here can fail a translation: any problem
+     * just means a screen translated without a game.
+     */
+    private suspend fun detectGame(settings: AppSettings): GameContext? {
+        if (!settings.gameDetection) return null
+        return try {
+            val pkg = ForegroundApp.current(this) ?: return null
+            val profile = app.games.touch(pkg, ForegroundApp.label(this, pkg))
+            if (profile.enabled) GameContext(profile, app.games.glossary(pkg)) else null
+        } catch (e: CancellationException) { throw e } catch (_: Exception) { null }
+    }
 
     private fun invalidateFrame() {
         generation++
@@ -303,7 +330,6 @@ class TranslationService : Service() {
         if (!failed) app.session.value = SessionState()
         super.onDestroy()
     }
-    private class CaptureUnavailable : Exception()
     companion object {
         const val ACTION_STOP = "com.adam.app_screentranslate.STOP"
         const val ACTION_RESUME = "com.adam.app_screentranslate.RESUME_CAPTURE"

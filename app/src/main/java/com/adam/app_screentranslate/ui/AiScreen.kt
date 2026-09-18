@@ -133,14 +133,14 @@ fun AiTab(panel: AiPanel, app: AppSettings, onApp: (AppSettings) -> Unit) {
     LaunchedEffect(panel.revealed) { panel.revealed?.let { draft = it; show = true } }
 
     Text("ИИ-перевод", fontSize = 25.sp, fontWeight = FontWeight.Bold)
-    Text("xAI Grok вместо веб-переводчика", color = Muted, fontSize = 13.sp, modifier = Modifier.padding(top = 6.dp))
+    Text("Grok или Gemini вместо веб-переводчика", color = Muted, fontSize = 13.sp, modifier = Modifier.padding(top = 6.dp))
 
     Heading("РЕЖИМ ПЕРЕВОДА")
     Section {
         Options(TranslationMode.entries, app.mode, { it.label }) { onApp(app.copy(mode = it)) }
         Spacer(Modifier.height(10.dp))
         Text(if (app.mode == TranslationMode.AI)
-            "Экран уходит в xAI пакетами по 8 блоков. При отказе включается резервный переводчик."
+            "Экран уходит в ${ai.provider.label} пакетами по 8 блоков. При отказе включается резервный переводчик."
         else "Перевод идёт через Google или Yandex. Настройки ниже не используются.",
             color = Muted, fontSize = 11.sp)
     }
@@ -251,6 +251,20 @@ fun AiTab(panel: AiPanel, app: AppSettings, onApp: (AppSettings) -> Unit) {
         Spacer(Modifier.height(8.dp))
         Text(if (ai.repair) "Экран переводится целиком, поэтому кэш не используется."
         else "Каждый блок переводится отдельно и попадает в кэш.", color = Muted, fontSize = 11.sp)
+        Spacer(Modifier.height(14.dp))
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f)) {
+                Text("Контекст игры", fontWeight = FontWeight.Medium, fontSize = 14.sp)
+                Text("Название, заметки и найденные на экране термины глоссария", color = Muted, fontSize = 11.sp)
+            }
+            Switch(checked = ai.context, onCheckedChange = { panel.update(ai.copy(context = it)) })
+        }
+        Spacer(Modifier.height(8.dp))
+        Text(when {
+            !app.gameDetection -> "Определение игры выключено на вкладке «Игры» — контекст не передаётся."
+            ai.context -> "Работает для игр с включённым профилем."
+            else -> "Выключено: модель получает только текст экрана и языки."
+        }, color = Muted, fontSize = 11.sp)
     }
 
     Heading("СИСТЕМНЫЙ ПРОМПТ")
@@ -262,10 +276,15 @@ fun AiTab(panel: AiPanel, app: AppSettings, onApp: (AppSettings) -> Unit) {
 
     Heading("ПРИВАТНОСТЬ ИИ-РЕЖИМА")
     Section {
-        Text("Что уходит в xAI", fontWeight = FontWeight.SemiBold)
+        Text("Что уходит в ${ai.provider.label}", fontWeight = FontWeight.SemiBold)
         Spacer(Modifier.height(8.dp))
-        Text("Снимок экрана не покидает устройство и в ИИ-режиме — отправляется только распознанный текст, номера блоков и языки. Но текста уходит больше, чем обычному переводчику: весь распознанный экран пакетами и системный промпт. Получатель — ${ai.provider.label}.",
+        Text("Снимок экрана не покидает устройство и в ИИ-режиме — отправляется только распознанный текст, номера блоков и языки. Но текста уходит больше, чем обычному переводчику: весь распознанный экран пакетами и системный промпт.",
             color = Muted, fontSize = 13.sp)
+        if (ai.context && app.gameDetection) {
+            Spacer(Modifier.height(8.dp))
+            Text("С контекстом игры к этому добавляются её название и package, ваши заметки о ней и те термины глоссария, что найдены на экране.",
+                color = Muted, fontSize = 13.sp)
+        }
         Spacer(Modifier.height(10.dp))
         Text("Ключи хранятся зашифрованными на этом устройстве, по одному на провайдера, и не попадают в резервные копии Android.",
             color = Muted, fontSize = 11.sp)
@@ -293,7 +312,7 @@ fun AiTab(panel: AiPanel, app: AppSettings, onApp: (AppSettings) -> Unit) {
  * the paste preview and the clipboard history. Older systems ignore the extra, so no branch.
  */
 private fun tokenClip(value: String): ClipEntry {
-    val clip = ClipData.newPlainText("xAI token", value)
+    val clip = ClipData.newPlainText("API key", value)
     clip.description.extras = PersistableBundle().apply {
         putBoolean("android.content.extra.IS_SENSITIVE", true)
     }
@@ -301,7 +320,7 @@ private fun tokenClip(value: String): ClipEntry {
 }
 
 @Composable
-private fun <T> Picker(items: List<T>, selected: T, label: (T) -> String,
+internal fun <T> Picker(items: List<T>, selected: T, label: (T) -> String,
                        hint: (T) -> String? = { null }, onSelect: (T) -> Unit) {
     items.forEach { item ->
         Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(10.dp)).clickable { onSelect(item) }

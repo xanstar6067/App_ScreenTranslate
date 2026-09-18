@@ -29,9 +29,9 @@ private val Panel = Color(0xFF172733)
 @Composable
 fun HomeScreen(
     settings: AppSettings, session: SessionState, permissions: PermissionStatus, cache: TranslationCache,
-    ai: AiPanel, onSettings: (AppSettings) -> Unit, onToggle: (Boolean) -> Unit,
+    ai: AiPanel, games: GamesPanel, onSettings: (AppSettings) -> Unit, onToggle: (Boolean) -> Unit,
     onOverlay: () -> Unit, onCapture: () -> Unit, onNotifications: () -> Unit,
-    onBattery: () -> Unit, onRefresh: () -> Unit
+    onBattery: () -> Unit, onUsageAccess: () -> Unit, onRefresh: () -> Unit
 ) {
     var tab by rememberSaveable { mutableIntStateOf(0) }
     var chooser by remember { mutableStateOf<String?>(null) }
@@ -55,11 +55,12 @@ fun HomeScreen(
             }
             Spacer(Modifier.height(26.dp))
             Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(16.dp)).background(Panel).padding(5.dp)) {
-                listOf("Перевод", "Настройки", "ИИ").forEachIndexed { i, title ->
+                listOf("Перевод", "Настройки", "ИИ", "Игры").forEachIndexed { i, title ->
                     Box(Modifier.weight(1f).clip(RoundedCornerShape(12.dp))
                         .background(if (tab == i) Mint else Color.Transparent).clickable { tab = i }.padding(vertical = 12.dp),
                         contentAlignment = Alignment.Center) {
-                        Text(title, color = if (tab == i) Ink else Muted, fontWeight = FontWeight.SemiBold, fontSize = 14.sp)
+                        Text(title, color = if (tab == i) Ink else Muted, fontWeight = FontWeight.SemiBold, fontSize = 13.sp,
+                            maxLines = 1)
                     }
                 }
             }
@@ -89,6 +90,8 @@ fun HomeScreen(
                                 SessionPhase.PAUSED -> Color(0xFFFFD39B)
                                 else -> Muted
                             }, fontSize = 13.sp)
+                            if (settings.gameDetection && session.game != null)
+                                Text("Игра: ${session.game}", color = Muted, fontSize = 12.sp, modifier = Modifier.padding(top = 4.dp))
                         }
                         Switch(checked = session.phase in listOf(SessionPhase.ACTIVE, SessionPhase.STARTING),
                             enabled = session.phase != SessionPhase.STARTING, onCheckedChange = onToggle)
@@ -134,6 +137,8 @@ fun HomeScreen(
                 }
             } else if (tab == 2) {
                 AiTab(ai, settings, onSettings)
+            } else if (tab == 3) {
+                GamesTab(games, settings, onSettings, permissions.usage, onUsageAccess)
             } else {
                 Text("Подстройте под себя", fontSize = 25.sp, fontWeight = FontWeight.Bold)
                 Text("Для игр, диалогов и всего между ними", color = Muted, fontSize = 13.sp, modifier = Modifier.padding(top = 6.dp))

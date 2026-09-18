@@ -2,7 +2,9 @@ package com.adam.app_screentranslate.translation.ai
 
 import com.adam.app_screentranslate.model.AiFragment
 import com.adam.app_screentranslate.model.Box
+import com.adam.app_screentranslate.model.GlossaryEntry
 import com.adam.app_screentranslate.model.ScreenTextBlock
+import com.adam.app_screentranslate.model.TermKind
 import org.json.JSONArray
 import org.json.JSONObject
 
@@ -53,11 +55,25 @@ object AiProtocol {
             .put("properties", JSONObject().put("fragments", JSONObject().put("type", "ARRAY").put("items", fragment)))
     }
 
-    fun payload(blocks: List<ScreenTextBlock>, source: String, target: String): String {
+    /**
+     * The glossary travels with the packet it belongs to, not in the system prompt: it is filtered
+     * per packet, and a system prompt that stays the same across packets is what a provider caches.
+     */
+    fun payload(blocks: List<ScreenTextBlock>, source: String, target: String,
+                glossary: List<GlossaryEntry> = emptyList()): String {
+        val root = JSONObject().put("source_language", source).put("target_language", target)
+        if (glossary.isNotEmpty()) {
+            val terms = JSONArray()
+            glossary.forEach { entry ->
+                val item = JSONObject().put("term", entry.term).put("translation", entry.rendering)
+                if (entry.kind != TermKind.TERM) item.put("kind", entry.kind.wire)
+                terms.put(item)
+            }
+            root.put("glossary", terms)
+        }
         val array = JSONArray()
         blocks.forEach { array.put(JSONObject().put("id", it.id).put("text", it.originalText)) }
-        return JSONObject().put("source_language", source).put("target_language", target)
-            .put("blocks", array).toString()
+        return root.put("blocks", array).toString()
     }
 
     /**

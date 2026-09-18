@@ -1,6 +1,7 @@
 package com.adam.app_screentranslate
 import android.app.Application
 import com.adam.app_screentranslate.data.AiConfigManager
+import com.adam.app_screentranslate.data.GameStore
 import com.adam.app_screentranslate.data.SettingsManager
 import com.adam.app_screentranslate.data.TranslationCache
 import com.adam.app_screentranslate.model.SessionState
@@ -10,5 +11,6 @@ class TranslatorApp : Application() {
     val settings by lazy { SettingsManager(this) }
     val ai by lazy { AiConfigManager(this) }
     val cache by lazy { TranslationCache(this) }
+    val games by lazy { GameStore(this) }
     val session = MutableStateFlow(SessionState())
 }

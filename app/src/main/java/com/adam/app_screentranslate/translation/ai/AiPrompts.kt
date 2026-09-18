@@ -1,5 +1,7 @@
 package com.adam.app_screentranslate.translation.ai
 
+import com.adam.app_screentranslate.model.GameProfile
+
 data class AiPrompt(val id: String, val title: String, val description: String, val text: String)
 
 /**
@@ -21,14 +23,18 @@ object AiPrompts {
 
     private val CONTRACT = """
         You receive a JSON object with source_language, target_language and blocks, where each block
-        has an integer id and the text recognized at one place on the screen.
+        has an integer id and the text recognized at one place on the screen. It may also carry a
+        glossary of terms from this game.
 
         Return one fragment per piece of meaning. Rules that are never relaxed:
         - every input id appears in exactly one fragment, and no other ids exist;
         - corrected_source_text is the repaired original, translated_text is its translation;
         - translate into target_language even when the source is already close to it;
         - keep the register, punctuation and line-level brevity of interface text;
-        - leave proper nouns, tags and codes that a player types or searches unchanged.
+        - leave proper nouns, tags and codes that a player types or searches unchanged;
+        - the glossary is authoritative: render each listed term as its translation says, inflected
+          as the sentence requires; where the translation equals the term, keep the term as it is.
+          Entries of kind character, faction or location are names, not words to interpret.
     """.trimIndent()
 
     val builtIn: List<AiPrompt> = listOf(
@@ -37,6 +43,8 @@ object AiPrompts {
             """
             You are a game localization engine. You translate text captured from a running game or
             application into {{TARGET_LANGUAGE}}. The source language is {{SOURCE_LANGUAGE}}.
+
+            {{GAME_CONTEXT}}
 
             {{CONTRACT}}
 
@@ -52,6 +60,8 @@ object AiPrompts {
             You are a user interface translation engine. You translate interface text captured from a
             running application into {{TARGET_LANGUAGE}}. The source language is {{SOURCE_LANGUAGE}}.
 
+            {{GAME_CONTEXT}}
+
             {{CONTRACT}}
 
             {{REPAIR_RULES}}
@@ -64,13 +74,21 @@ object AiPrompts {
 
     fun byId(id: String): AiPrompt = builtIn.firstOrNull { it.id == id } ?: builtIn.first()
 
-    fun system(id: String, source: String, target: String, repair: Boolean): String = render(
+    /**
+     * [game] is null when there is no game context: no detection, a disabled profile, or context
+     * switched off. Every game variable then resolves to nothing and its line disappears.
+     */
+    fun system(id: String, source: String, target: String, repair: Boolean, game: GameProfile? = null): String = render(
         byId(id).text,
         mapOf(
             "SOURCE_LANGUAGE" to source, "TARGET_LANGUAGE" to target, "CONTRACT" to CONTRACT,
             "REPAIR_RULES" to if (repair) REPAIR else
                 "Never join blocks: every fragment contains exactly one id, and corrected_source_text " +
-                "repairs only obvious OCR errors inside that one block."))
+                "repairs only obvious OCR errors inside that one block.",
+            // GAME_CONTEXT serves the built-in prompts; the rest are for prompts a user writes (stage 3).
+            "GAME_CONTEXT" to game?.let { AiContext.describe(it) }.orEmpty(),
+            "GAME_NAME" to game?.title.orEmpty(), "PACKAGE_NAME" to game?.packageName.orEmpty(),
+            "GAME_NOTES" to game?.notes?.trim().orEmpty()))
 
     /**
      * A placeholder that resolves to nothing takes its whole line with it. Leaving "Glossary:" with
