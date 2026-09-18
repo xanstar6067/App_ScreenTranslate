@@ -153,6 +153,26 @@ class FrameAnalysis(
 
     companion object {
         val none = FrameAnalysis(0, 0, 0f, 0f, 1f, 1f, IntArray(0))
+
+        /**
+         * Whether a frame is entirely dark — what a window that forbids capture turns into. Every
+         * pixel is read and the scan stops at the first lit one. A sparse sample is not enough: on a
+         * night scene the only light is a few thin strokes of text, a grid steps right over them, and
+         * a real frame gets reported as protected.
+         */
+        fun isBlank(width: Int, height: Int, readRow: (y: Int, row: IntArray) -> Unit): Boolean {
+            if (width <= 0 || height <= 0) return true
+            val row = IntArray(width)
+            for (y in 0 until height) {
+                readRow(y, row)
+                for (c in row) {
+                    if ((c shr 16 and 255) >= LIT || (c shr 8 and 255) >= LIT || (c and 255) >= LIT) return false
+                }
+            }
+            return true
+        }
+        /** A protected surface is pure black; anything this bright is content, dithering is not. */
+        private const val LIT = 5
         /** Neighbouring cells of one flat surface stay within this much of each other. */
         private const val DETAIL = 26
         /** How far a colour may drift from the surface already accepted and still belong to it. */

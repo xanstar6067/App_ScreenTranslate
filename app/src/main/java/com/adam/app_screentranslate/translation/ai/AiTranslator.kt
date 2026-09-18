@@ -20,11 +20,12 @@ class AiTranslator(private val client: AiEngine = XaiClient()) {
         blocks: List<ScreenTextBlock>, settings: AppSettings, ai: AiSettings, token: String,
         cache: TranslationStore?, onResult: suspend (ScreenTextBlock) -> Unit
     ): AiOutcome {
-        if (token.isBlank()) return AiOutcome(blocks, "Не указан API token xAI.")
-        if (ai.model.isBlank()) return AiOutcome(blocks, "Не выбрана модель xAI.")
+        if (token.isBlank()) return AiOutcome(blocks, "Не указан API-ключ ${ai.provider.label}.")
+        if (ai.model.isBlank()) return AiOutcome(blocks, "Не выбрана модель ${ai.provider.label}.")
         val target = language(settings.target)
         val source = language(settings.source)
-        val provider = "xai:${ai.model}"
+        // "xai:" is what the cache already holds for Grok, so existing entries stay valid.
+        val provider = "${ai.provider.name.lowercase(Locale.ROOT)}:${ai.model}"
         val pending = blocks.filter { it.detectedLanguage != settings.target }.toMutableList()
 
         // Merging makes a fragment depend on its neighbours, so a per-block cache stops being
@@ -40,12 +41,22 @@ class AiTranslator(private val client: AiEngine = XaiClient()) {
         val failed = mutableListOf<ScreenTextBlock>()
         var reason: String? = null
         val system = AiPrompts.system(ai.prompt, source, target, ai.repair)
-        for (batch in batches(readingOrder(pending))) {
+        val packets = batches(readingOrder(pending))
+        for ((index, batch) in packets.withIndex()) {
             val fragments = try { request(token, ai.model, system, batch, source, target, ai.repair) }
             catch (e: CancellationException) { throw e }
             catch (e: AiFormatException) { failed += batch; reason = e.reason; continue }
-            catch (e: AiHttpException) { failed += batch; reason = e.reason; continue }
-            catch (_: IOException) { failed += batch; reason = "Сеть недоступна."; continue }
+            catch (e: AiHttpException) {
+                reason = e.reason
+                if (concernsPacket(e)) { failed += batch; continue }
+                // The provider refuses everything, not this packet. Every remaining packet would pay
+                // the same wait, one after another, while the fallback has the screen on hold.
+                packets.drop(index).forEach { failed += it }; break
+            }
+            catch (_: IOException) {
+                reason = "Сеть недоступна."
+                packets.drop(index).forEach { failed += it }; break
+            }
             val known = batch.associateBy { it.id }
             for (fragment in fragments) {
                 val members = readingOrder(fragment.sourceBlockIds.mapNotNull { known[it] })
@@ -63,6 +74,12 @@ class AiTranslator(private val client: AiEngine = XaiClient()) {
         }
         return AiOutcome(failed, reason)
     }
+
+    /**
+     * A 4xx about the request itself (too long, rejected content) leaves other packets worth trying.
+     * A refused key, an unknown model, a spent limit or a server outage answers the same to all.
+     */
+    private fun concernsPacket(e: AiHttpException) = e.status in 400..422 && e.status !in listOf(401, 403, 404)
 
     /**
      * One packet, and one second chance. Constrained decoding makes a malformed answer unlikely but

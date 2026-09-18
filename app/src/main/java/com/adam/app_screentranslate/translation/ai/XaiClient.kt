@@ -59,6 +59,8 @@ class XaiClient(private val base: String = "https://api.x.ai/v1") : AiEngine {
                     return if (viaResponses) AiProtocol.responsesContent(raw) else AiProtocol.chatContent(raw)
                 } catch (e: AiHttpException) {
                     last = e
+                    // The other endpoint answers a refused key, a spent limit or an outage the same way.
+                    if (e.status in listOf(401, 403, 429) || e.status >= 500) throw e
                     if (!e.refusedStructure()) break
                     transport = when (transport) {
                         AiTransport.SCHEMA -> AiTransport.OBJECT

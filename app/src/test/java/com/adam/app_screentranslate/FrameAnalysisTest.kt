@@ -7,6 +7,35 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class FrameAnalysisTest {
+    /**
+     * A 1080×2340 night scene, generated row by row: black except a few thin strokes of text in
+     * [lit]. The old check sampled a 24×24 grid — rows 0, 97, 194…, columns 0, 45, 90… — so
+     * text at rows 50..60 fell between its points and a real frame was called protected.
+     */
+    private fun night(lit: (x: Int, y: Int) -> Boolean, dark: Int = 0xFF000000.toInt(), rowsRead: IntArray? = null) =
+        FrameAnalysis.isBlank(1080, 2340) { y, row ->
+            rowsRead?.let { it[0]++ }
+            for (x in row.indices) row[x] = if (lit(x, y)) 0xFFE0E0E0.toInt() else dark
+        }
+
+    @Test fun textOnANightSceneIsNotABlankFrame() {
+        assertFalse(night({ x, y -> y in 50..60 && x in 20..22 }))
+        // A single lit pixel anywhere is content.
+        assertFalse(night({ x, y -> x == 1079 && y == 2339 }))
+    }
+
+    @Test fun onlyAnEntirelyDarkFrameIsBlank() {
+        assertTrue(night({ _, _ -> false }))
+        // Dithering on a protected surface stays below the threshold and is not content.
+        assertTrue(night({ _, _ -> false }, dark = 0xFF030402.toInt()))
+    }
+
+    @Test fun anOrdinaryFrameIsSettledOnTheFirstRow() {
+        val rows = IntArray(1)
+        assertFalse(night({ _, _ -> true }, rowsRead = rows))
+        assertEquals(1, rows[0])
+    }
+
     private val columns = 40
     private val rows = 30
     private val cell = 10f

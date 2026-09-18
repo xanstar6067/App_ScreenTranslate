@@ -305,6 +305,39 @@ class AiTranslationTest {
         assertNotNull(outcome.reason)
     }
 
+    /** Three packets of eight: enough to tell "stopped at once" from "tried every packet". */
+    private val crowd = (1L..24L).map { block(it, "Line $it", top = it * 30f) }
+
+    @Test fun refusedKeyStopsAtTheFirstPacketAndHandsEverythingToFallback() = runBlocking {
+        val engine = FakeEngine { throw AiHttpException(401, "Неверный или отозванный API-ключ") }
+        val outcome = AiTranslator(engine).translate(crowd, AppSettings(), AiSettings(model = "grok-4"), "token", null) { }
+        assertEquals("A dead key must not be retried packet after packet", 1, engine.calls)
+        assertEquals(crowd.map { it.id }, outcome.untranslated.map { it.id })
+        assertEquals("Неверный или отозванный API-ключ", outcome.reason)
+    }
+
+    @Test fun lostNetworkStopsAtTheFirstPacket() = runBlocking {
+        val engine = FakeEngine { throw java.io.IOException("timeout") }
+        val outcome = AiTranslator(engine).translate(crowd, AppSettings(), AiSettings(model = "grok-4"), "token", null) { }
+        assertEquals(1, engine.calls)
+        assertEquals(crowd.size, outcome.untranslated.size)
+    }
+
+    @Test fun packetSpecificRefusalLetsTheOtherPacketsThrough() = runBlocking {
+        var call = 0
+        val engine = FakeEngine { user ->
+            // Only the first packet is refused; the rest are answered with exactly their own ids.
+            if (call++ == 0) throw AiHttpException(400, "Prompt too long")
+            val ids = Regex("\"id\":(\\d+)").findAll(user).map { it.groupValues[1].toInt() }.toList()
+            fragments(*ids.map { fragment("[$it]", "Line $it", "Строка $it") }.toTypedArray())
+        }
+        val shown = mutableListOf<ScreenTextBlock>()
+        val outcome = AiTranslator(engine).translate(crowd, AppSettings(), AiSettings(model = "grok-4"), "token", null) { shown += it }
+        assertEquals(3, engine.calls)
+        assertEquals((1L..8L).toList(), outcome.untranslated.map { it.id })
+        assertEquals(16, shown.size)
+    }
+
     @Test fun cacheIsUsedOnlyWhenJoiningIsOff() = runBlocking {
         val answer = fragments(fragment("[1]", "Start", "Старт"))
         val screen = listOf(block(1, "Start"))

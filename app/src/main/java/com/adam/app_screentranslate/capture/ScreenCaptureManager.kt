@@ -143,14 +143,8 @@ class ScreenCaptureManager(
             wm.defaultDisplay.getRealMetrics(metrics)
             return metrics.widthPixels to metrics.heightPixels
         }
-        fun isBlank(bitmap: Bitmap): Boolean {
-            var max = 0
-            for (y in 0 until bitmap.height step (bitmap.height / 24).coerceAtLeast(1))
-                for (x in 0 until bitmap.width step (bitmap.width / 24).coerceAtLeast(1)) {
-                    val c = bitmap.getPixel(x, y)
-                    max = maxOf(max, (c shr 16) and 255, (c shr 8) and 255, c and 255)
-                }
-            return max < 5
+        fun isBlank(bitmap: Bitmap): Boolean = FrameAnalysis.isBlank(bitmap.width, bitmap.height) { y, row ->
+            bitmap.getPixels(row, 0, bitmap.width, 0, y, bitmap.width, 1)
         }
     }
 }
