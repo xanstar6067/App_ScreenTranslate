@@ -1,5 +1,6 @@
 package com.adam.app_screentranslate.translation.ai
 
+import com.adam.app_screentranslate.model.AiEffort
 import com.adam.app_screentranslate.model.AiModelInfo
 import com.adam.app_screentranslate.model.AiProvider
 import kotlinx.coroutines.CancellationException
@@ -21,6 +22,8 @@ class XaiClient(private val base: String = "https://api.x.ai/v1") : AiEngine {
     private val http = AiHttp()
     private val transports = ConcurrentHashMap<String, AiTransport>()
     private val responsesApi = ConcurrentHashMap<String, Boolean>()
+    /** Per model and level: which rung of [AiReasoning.xaiLadder] the model accepted. */
+    private val efforts = ConcurrentHashMap<String, String>()
     private val json = "application/json".toMediaType()
 
     override fun usable(models: List<AiModelInfo>) = XaiModels.textTranslationModels(models)
@@ -31,7 +34,9 @@ class XaiClient(private val base: String = "https://api.x.ai/v1") : AiEngine {
             AiTransport.SCHEMA, null -> "Структурированный вывод: json_schema"
             AiTransport.OBJECT -> "Структурированный вывод: json_object (схема не поддержана)"
             AiTransport.PLAIN -> "Структурированный вывод: только разбор текста"
-        })
+        },
+        "Рассуждение: " + (efforts.entries.firstOrNull { it.key.startsWith("$model|") }?.value
+            ?.let { if (it == NONE) "по умолчанию модели" else it } ?: "—"))
 
     override suspend fun models(token: String): List<AiModelInfo> {
         val language = try { http.fetch(get(token, "language-models")) } catch (e: CancellationException) { throw e }
@@ -47,20 +52,27 @@ class XaiClient(private val base: String = "https://api.x.ai/v1") : AiEngine {
         return (0 until data.length()).mapNotNull { data.optJSONObject(it)?.asModel() }
     }
 
-    override suspend fun translate(token: String, model: String, system: String, user: String): String {
+    override suspend fun translate(token: String, model: String, system: String, user: String, effort: AiEffort): String {
         var last: AiHttpException? = null
+        val ladder = AiReasoning.xaiLadder(model, effort)
+        val remembered = "$model|${effort.name}"
         for (viaResponses in responsesApi[model]?.let { listOf(it) } ?: endpointOrder(model)) {
             var transport = transports[model] ?: AiTransport.SCHEMA
+            var rung = efforts[remembered]?.let { value -> ladder.indexOfFirst { (it ?: NONE) == value }.coerceAtLeast(0) } ?: 0
             while (true) {
                 try {
-                    val raw = http.fetch(build(token, model, system, user, transport, viaResponses))
+                    val raw = http.fetch(build(token, model, system, user, transport, viaResponses, ladder[rung]))
                     transports[model] = transport
                     responsesApi[model] = viaResponses
+                    efforts[remembered] = ladder[rung] ?: NONE
                     return if (viaResponses) AiProtocol.responsesContent(raw) else AiProtocol.chatContent(raw)
                 } catch (e: AiHttpException) {
                     last = e
                     // The other endpoint answers a refused key, a spent limit or an outage the same way.
                     if (e.status in listOf(401, 403, 429) || e.status >= 500) throw e
+                    // A model without the reasoning parameter is asked again with the next rung.
+                    if (e.status in 400..422 && ladder[rung] != null && AiReasoning.refusesReasoning(e.reason)
+                        && rung < ladder.lastIndex) { rung++; continue }
                     if (!e.refusedStructure()) break
                     transport = when (transport) {
                         AiTransport.SCHEMA -> AiTransport.OBJECT
@@ -76,17 +88,67 @@ class XaiClient(private val base: String = "https://api.x.ai/v1") : AiEngine {
     private fun endpointOrder(model: String): List<Boolean> =
         if (prefersResponsesApi(model)) listOf(true, false) else listOf(false, true)
 
+    /**
+     * Research always goes to the Responses API when search is wanted: xAI's server-side
+     * web_search tool lives only there. Without search the endpoint the model answered on before
+     * is reused. The answer is free text; [GameResearch] recovers the JSON from it.
+     */
+    override suspend fun research(token: String, model: String, system: String, user: String,
+                                  effort: AiEffort, search: Boolean): AiAnswer {
+        val remarks = mutableListOf<String>()
+        var searching = search
+        val ladder = AiReasoning.xaiLadder(model, effort)
+        var rung = 0
+        val endpoints = if (search) listOf(true) else responsesApi[model]?.let { listOf(it) } ?: endpointOrder(model)
+        var last: AiHttpException? = null
+        for (viaResponses in endpoints) {
+            while (true) {
+                try {
+                    val body = if (viaResponses) responsesBody(model, system, user, AiTransport.PLAIN, ladder[rung])
+                        else completionBody(model, system, user, AiTransport.PLAIN, ladder[rung])
+                    body.put("temperature", 0.2)
+                    if (searching) body.put("tools", JSONArray().put(JSONObject().put("type", "web_search")))
+                    val raw = http.fetch(request(token, viaResponses, body), patient = true)
+                    responsesApi[model] = viaResponses
+                    val answer = AiResearchProtocol.xaiAnswer(raw)
+                    remarks += "Рассуждение: " + (ladder[rung] ?: "по умолчанию модели")
+                    if (searching) remarks += "Веб-поиск: источников — ${answer.sources.size}"
+                    return answer.copy(remarks = remarks)
+                } catch (e: AiHttpException) {
+                    last = e
+                    if (e.status in listOf(401, 403, 429) || e.status !in 400..422) throw e
+                    when {
+                        searching && AiReasoning.refusesSearch(e.reason) -> {
+                            searching = false
+                            remarks += "Модель отказалась от веб-поиска — ответ по её собственным знаниям"
+                        }
+                        ladder[rung] != null && AiReasoning.refusesReasoning(e.reason) && rung < ladder.lastIndex -> rung++
+                        search -> throw e
+                        else -> break
+                    }
+                }
+            }
+        }
+        throw last ?: AiHttpException(0, "Запрос не выполнен.")
+    }
+
     private fun build(token: String, model: String, system: String, user: String,
-                      transport: AiTransport, viaResponses: Boolean): Request {
-        val body = if (viaResponses) responsesBody(model, system, user, transport)
-        else completionBody(model, system, user, transport)
+                      transport: AiTransport, viaResponses: Boolean, effort: String?): Request {
+        val body = if (viaResponses) responsesBody(model, system, user, transport, effort)
+        else completionBody(model, system, user, transport, effort)
+        return request(token, viaResponses, body)
+    }
+
+    private fun request(token: String, viaResponses: Boolean, body: JSONObject): Request {
         return Request.Builder().url(if (viaResponses) "$base/responses" else "$base/chat/completions")
             .header("Authorization", "Bearer $token")
             .post(body.toString().toRequestBody(json)).build()
     }
 
-    private fun completionBody(model: String, system: String, user: String, transport: AiTransport): JSONObject {
+    private fun completionBody(model: String, system: String, user: String, transport: AiTransport,
+                               effort: String?): JSONObject {
         val body = JSONObject().put("model", model).put("temperature", 0).put("stream", false)
+        if (effort != null) body.put("reasoning_effort", effort)
             .put("messages", JSONArray()
                 .put(JSONObject().put("role", "system").put("content", system))
                 .put(JSONObject().put("role", "user").put("content", user)))
@@ -103,14 +165,15 @@ class XaiClient(private val base: String = "https://api.x.ai/v1") : AiEngine {
     /**
      * The Responses API flattens the schema into text.format and takes messages as typed content.
      *
-     * Reasoning effort is pinned low on purpose. It defaults to high, and a grok-4 model then spends
-     * thousands of tokens deliberating over a line of interface text — seconds of latency per packet
-     * on a screen the user is waiting to read, for a task that needs care, not deliberation.
+     * Reasoning effort comes from the settings and is low for translation by default. The server
+     * default is high, and a grok-4 model then spends thousands of tokens deliberating over a line
+     * of interface text — seconds of latency per packet on a screen the user is waiting to read.
      */
-    private fun responsesBody(model: String, system: String, user: String, transport: AiTransport): JSONObject {
+    private fun responsesBody(model: String, system: String, user: String, transport: AiTransport,
+                              effort: String?): JSONObject {
         val body = JSONObject().put("model", model).put("stream", false).put("temperature", 0)
-            .put("reasoning", JSONObject().put("effort", "low"))
             .put("input", JSONArray().put(input("system", system)).put(input("user", user)))
+        if (effort != null) body.put("reasoning", JSONObject().put("effort", effort))
         when (transport) {
             AiTransport.SCHEMA -> body.put("text", JSONObject().put("format", JSONObject()
                 .put("type", "json_schema").put("name", AiProtocol.SCHEMA_NAME)
@@ -148,6 +211,8 @@ class XaiClient(private val base: String = "https://api.x.ai/v1") : AiEngine {
         if (this == null) emptyList() else (0 until length()).mapNotNull { optString(it).ifBlank { null } }
 
     companion object {
+        private const val NONE = "none"
+
         /**
          * grok-4 and newer answer on the Responses API; older families on chat completions. Read by
          * hand rather than by pattern — Android's regex engine is stricter than the desktop JVM the

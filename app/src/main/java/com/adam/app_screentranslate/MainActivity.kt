@@ -68,7 +68,7 @@ class MainActivity : ComponentActivity() {
             val permissions = remember(refresh, session.phase) { readPermissions() }
             // Requests to the AI provider outlive recomposition, so the panels hold the activity's own scope.
             val ai = remember { AiPanel(app.ai, lifecycleScope) }
-            val games = remember { GamesPanel(app.games, app, lifecycleScope) }
+            val games = remember { GamesPanel(app.games, app, lifecycleScope, app.ai, ai::engine) }
             App_ScreenTranslateTheme {
                 HomeScreen(settings, session, permissions, app.cache, ai, games,
                     onSettings = app.settings::update, onToggle = { enable ->

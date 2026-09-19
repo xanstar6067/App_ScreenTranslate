@@ -50,7 +50,7 @@ class AiTranslator(private val client: AiEngine = XaiClient()) {
         val packets = batches(readingOrder(pending))
         for ((index, batch) in packets.withIndex()) {
             val glossary = game?.let { AiContext.relevant(it.glossary, batch.map { block -> block.originalText }) }.orEmpty()
-            val fragments = try { request(token, ai.model, system, batch, source, target, ai.repair, glossary) }
+            val fragments = try { request(token, ai.model, ai.effort, system, batch, source, target, ai.repair, glossary) }
             catch (e: CancellationException) { throw e }
             catch (e: AiFormatException) { failed += batch; reason = e.reason; continue }
             catch (e: AiHttpException) {
@@ -93,23 +93,23 @@ class AiTranslator(private val client: AiEngine = XaiClient()) {
      * not impossible, and handing the rejection reason back is far cheaper than losing the packet.
      */
     private suspend fun request(
-        token: String, model: String, system: String, batch: List<ScreenTextBlock>,
+        token: String, model: String, effort: AiEffort, system: String, batch: List<ScreenTextBlock>,
         source: String, target: String, repair: Boolean, glossary: List<GlossaryEntry>
     ): List<AiFragment> {
         val payload = AiProtocol.payload(batch, source, target, glossary)
-        return try { answer(token, model, system, payload, batch, repair) }
+        return try { answer(token, model, effort, system, payload, batch, repair) }
         catch (e: AiFormatException) {
-            answer(token, model, system,
+            answer(token, model, effort, system,
                 "$payload\n\nYour previous answer was rejected: ${e.reason} Return only corrected JSON.",
                 batch, repair)
         }
     }
 
     private suspend fun answer(
-        token: String, model: String, system: String, user: String,
+        token: String, model: String, effort: AiEffort, system: String, user: String,
         batch: List<ScreenTextBlock>, repair: Boolean
     ): List<AiFragment> {
-        val fragments = AiProtocol.parse(client.translate(token, model, system, user))
+        val fragments = AiProtocol.parse(client.translate(token, model, system, user, effort))
         AiProtocol.validate(fragments, batch, allowMerge = repair)
         return fragments
     }

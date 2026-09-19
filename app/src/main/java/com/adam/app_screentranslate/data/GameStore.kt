@@ -110,6 +110,30 @@ class GameStore(context: Context) : SQLiteOpenHelper(context, "games.db", null, 
         ok
     }
 
+    /**
+     * Several entries at once, as the AI fill offers them. An entry with an id replaces that entry —
+     * the user chose to overwrite it; one without is added unless the term is already there.
+     * Returns how many were written.
+     */
+    suspend fun saveAll(pkg: String, entries: List<GlossaryEntry>): Int = withContext(Dispatchers.IO) {
+        var written = 0
+        writableDatabase.transaction {
+            for (entry in entries) {
+                val values = ContentValues().apply {
+                    put("pkg", pkg); put("term", entry.term.trim()); put("translation", entry.rendering.trim())
+                    put("kind", entry.kind.name); put("keep", if (entry.keep) 1 else 0)
+                }
+                val ok = try {
+                    if (entry.id == 0L) insertWithOnConflict("glossary", null, values, SQLiteDatabase.CONFLICT_IGNORE) != -1L
+                    else update("glossary", values, "id=?", arrayOf(entry.id.toString())) > 0
+                } catch (_: android.database.sqlite.SQLiteConstraintException) { false }
+                if (ok) written++
+            }
+        }
+        reload()
+        written
+    }
+
     suspend fun remove(entryId: Long) = withContext(Dispatchers.IO) {
         writableDatabase.delete("glossary", "id=?", arrayOf(entryId.toString()))
         reload()

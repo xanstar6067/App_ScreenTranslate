@@ -14,27 +14,57 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.adam.app_screentranslate.data.AiConfigManager
 import com.adam.app_screentranslate.data.GameStore
 import com.adam.app_screentranslate.game.ForegroundApp
 import com.adam.app_screentranslate.game.InstalledApp
 import com.adam.app_screentranslate.model.*
+import com.adam.app_screentranslate.translation.ai.AiEngine
+import com.adam.app_screentranslate.translation.ai.AiFormatException
+import com.adam.app_screentranslate.translation.ai.AiHttpException
 import com.adam.app_screentranslate.translation.ai.AiPrompts
+import com.adam.app_screentranslate.translation.ai.AiTranslator
+import com.adam.app_screentranslate.translation.ai.GameResearch
+import com.adam.app_screentranslate.translation.ai.GameResearcher
+import com.adam.app_screentranslate.translation.ai.ResearchProposal
+import com.adam.app_screentranslate.translation.ai.ResearchRequest
+import com.adam.app_screentranslate.translation.ai.ResearchResult
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import java.io.IOException
 import java.text.DateFormat
 import java.util.Date
 
-private val Warn = Color(0xFFFFD39B)
+internal val Warn = Color(0xFFFFD39B)
+
+/** The AI fill of one game's profile. It belongs to the panel, so leaving the tab does not lose it. */
+sealed interface ResearchState {
+    val pkg: String
+    data class Running(override val pkg: String, val started: Long, val search: Boolean) : ResearchState
+    data class Failed(override val pkg: String, val message: String) : ResearchState
+    data class Done(override val pkg: String, val result: ResearchResult, val proposals: List<ResearchProposal>) : ResearchState
+}
 
 /**
  * State behind the games tab. Writes run in the activity's scope so that leaving the tab mid-write
  * does not cancel them; what is on screen is reloaded after each one through [revision].
  */
-class GamesPanel(private val store: GameStore, private val context: Context, private val scope: CoroutineScope) {
+class GamesPanel(private val store: GameStore, private val context: Context, private val scope: CoroutineScope,
+                 private val ai: AiConfigManager, private val engine: (AiProvider) -> AiEngine) {
     val games get() = store.games
     val terms get() = store.terms
+    val aiSettings get() = ai.settings
+    val hasToken get() = ai.hasToken
+    val models get() = ai.models
+
+    /** One research at a time: it can run for minutes and costs the user's own quota. */
+    var research by mutableStateOf<ResearchState?>(null)
+        private set
+    private var researchJob: Job? = null
 
     /** Bumped after every glossary write so an open game reloads its entries. */
     var revision by mutableIntStateOf(0)
@@ -66,6 +96,53 @@ class GamesPanel(private val store: GameStore, private val context: Context, pri
     }
 
     fun removeEntry(id: Long) { scope.launch { store.remove(id); revision++ } }
+
+    fun updateAi(value: AiSettings) = ai.update(value)
+
+    fun startResearch(game: GameProfile, app: AppSettings, kinds: Set<TermKind>, notes: Boolean, limit: Int, focus: String) {
+        if (researchJob?.isActive == true) return
+        val settings = ai.settings.value
+        research = ResearchState.Running(game.packageName, System.currentTimeMillis(), settings.researchSearch)
+        researchJob = scope.launch {
+            research = try {
+                val known = store.glossary(game.packageName)
+                val languages = app.forGame(game)
+                val source = if (languages.source == "auto") "the game's original language, as shown on screen"
+                    else AiTranslator.language(languages.source)
+                val request = ResearchRequest(game, known, source, AiTranslator.language(languages.target),
+                    kinds, notes, limit, focus)
+                val result = withContext(Dispatchers.IO) {
+                    GameResearcher(engine(settings.provider)).research(request, settings, ai.token())
+                }
+                ResearchState.Done(game.packageName, result, GameResearch.compare(result.terms, known))
+            } catch (e: CancellationException) { research = null; throw e }
+            catch (e: AiHttpException) { ResearchState.Failed(game.packageName, if (e.status > 0) "${e.status}: ${e.reason}" else e.reason) }
+            catch (e: AiFormatException) { ResearchState.Failed(game.packageName, "Модель ответила не по формату: ${e.reason}") }
+            catch (_: IOException) { ResearchState.Failed(game.packageName, "Сеть недоступна или сервер не ответил вовремя.") }
+            // The class name alone: an exception message can carry what was being sent.
+            catch (e: Exception) { ResearchState.Failed(game.packageName, "Сбой: ${e.javaClass.simpleName}") }
+        }
+    }
+
+    fun cancelResearch() { researchJob?.cancel(); research = null }
+
+    fun dismissResearch() { if (researchJob?.isActive != true) research = null }
+
+    /**
+     * Writes what the user kept. [notes] and [title] are null when they chose to leave them as
+     * they are. The profile is re-read from the list, so an edit made meanwhile is not undone.
+     */
+    fun applyResearch(pkg: String, entries: List<GlossaryEntry>, notes: String?, title: String?, done: (Int) -> Unit) {
+        scope.launch {
+            val written = store.saveAll(pkg, entries)
+            val current = store.games.value.firstOrNull { it.packageName == pkg }
+            if (current != null && (notes != null || title != null))
+                store.update(current.copy(notes = notes ?: current.notes, customName = title ?: current.customName))
+            revision++
+            research = null
+            done(written)
+        }
+    }
 }
 
 @Composable
@@ -74,9 +151,11 @@ fun GamesTab(panel: GamesPanel, settings: AppSettings, onSettings: (AppSettings)
     val games by panel.games.collectAsState()
     val terms by panel.terms.collectAsState()
     var selected by rememberSaveable { mutableStateOf<String?>(null) }
+    var researching by rememberSaveable { mutableStateOf(false) }
     LaunchedEffect(Unit) { panel.refresh() }
     val open = games.firstOrNull { it.packageName == selected }
-    if (open != null) GameDetail(panel, open) { selected = null }
+    if (open != null && researching) ResearchPage(panel, open, settings) { researching = false }
+    else if (open != null) GameDetail(panel, open, onResearch = { researching = true }) { selected = null }
     else GameList(panel, games, terms, settings, onSettings, usageAccess, onUsageAccess) { selected = it }
 }
 
@@ -161,7 +240,7 @@ private fun GameRow(game: GameProfile, terms: Int, onClick: () -> Unit) {
 }
 
 @Composable
-private fun GameDetail(panel: GamesPanel, game: GameProfile, onBack: () -> Unit) {
+private fun GameDetail(panel: GamesPanel, game: GameProfile, onResearch: () -> Unit, onBack: () -> Unit) {
     var name by rememberSaveable(game.packageName) { mutableStateOf(game.customName) }
     var notes by rememberSaveable(game.packageName) { mutableStateOf(game.notes) }
     var glossary by remember(game.packageName) { mutableStateOf<List<GlossaryEntry>>(emptyList()) }
@@ -173,6 +252,8 @@ private fun GameDetail(panel: GamesPanel, game: GameProfile, onBack: () -> Unit)
     TextButton(onClick = onBack, contentPadding = PaddingValues(0.dp)) { Text("← Все игры", color = Mint) }
     Text(game.title, fontSize = 25.sp, fontWeight = FontWeight.Bold)
     Text(game.packageName, color = Muted, fontSize = 12.sp, modifier = Modifier.padding(top = 4.dp))
+    Spacer(Modifier.height(18.dp))
+    ResearchCard(panel.research?.takeIf { it.pkg == game.packageName }, onResearch)
 
     Heading("ПРОФИЛЬ")
     Section {
@@ -240,7 +321,8 @@ private fun GameDetail(panel: GamesPanel, game: GameProfile, onBack: () -> Unit)
         }
         if (glossary.isEmpty()) {
             Spacer(Modifier.height(10.dp))
-            Text("Пусто. Например: Rapture → Рапчер, NIKKE → не переводить.", color = Muted, fontSize = 12.sp)
+            Text("Пусто. Например: Rapture → Рапчер, NIKKE → не переводить. Или заполните его с ИИ — кнопка вверху.",
+                color = Muted, fontSize = 12.sp)
         }
         Spacer(Modifier.height(12.dp))
         OutlinedButton(onClick = { editing = GlossaryEntry("", "") }, modifier = Modifier.fillMaxWidth()) {
@@ -291,7 +373,7 @@ private fun GameDetail(panel: GamesPanel, game: GameProfile, onBack: () -> Unit)
 }
 
 @Composable
-private fun EntryDialog(entry: GlossaryEntry, onSave: (GlossaryEntry, () -> Unit) -> Unit,
+internal fun EntryDialog(entry: GlossaryEntry, onSave: (GlossaryEntry, () -> Unit) -> Unit,
                         onDelete: (() -> Unit)?, onDismiss: () -> Unit) {
     var term by remember { mutableStateOf(entry.term) }
     var translation by remember { mutableStateOf(entry.translation) }

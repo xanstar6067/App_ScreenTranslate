@@ -61,6 +61,17 @@ data class AppSettings(
 )
 enum class AiProvider(val label: String) { XAI("xAI Grok"), GEMINI("Google Gemini") }
 /**
+ * How long a model may think. The provider-neutral scale the settings speak; each client maps it
+ * onto what the chosen model accepts (reasoning.effort for xAI, thinkingLevel/thinkingBudget for
+ * Gemini) and steps down when the model refuses a level.
+ */
+enum class AiEffort(val label: String, val hint: String) {
+    MINIMAL("Мин.", "Быстрее всего: размышления отключены или сведены к минимуму"),
+    LOW("Низкая", "Короткое обдумывание"),
+    MEDIUM("Средняя", "Баланс скорости и тщательности"),
+    HIGH("Высокая", "Дольше и дороже, но внимательнее")
+}
+/**
  * AI configuration. Token, model and cached model list are kept per provider, so switching back
  * restores what that provider was set to. The tokens live apart from this, encrypted; see SecureStore.
  */
@@ -69,7 +80,12 @@ data class AiSettings(
     val model: String = "", val fallback: AiFallback = AiFallback.AUTO,
     val repair: Boolean = true, val prompt: String = "game",
     /** Whether a detected game's name, notes and glossary go into the request. */
-    val context: Boolean = true
+    val context: Boolean = true,
+    /** Reasoning for screen translation. Minimal by default: the player is waiting for the screen. */
+    val effort: AiEffort = AiEffort.MINIMAL,
+    /** Reasoning and web search for filling a game profile, where care matters more than speed. */
+    val researchEffort: AiEffort = AiEffort.MEDIUM,
+    val researchSearch: Boolean = true
 )
 enum class GameOrigin(val label: String) { AUTO("Обнаружена автоматически"), MANUAL("Добавлена вручную") }
 /** Characters, factions and locations are names rather than words; the model is told which is which. */

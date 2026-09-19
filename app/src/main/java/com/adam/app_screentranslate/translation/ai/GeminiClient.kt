@@ -1,5 +1,6 @@
 package com.adam.app_screentranslate.translation.ai
 
+import com.adam.app_screentranslate.model.AiEffort
 import com.adam.app_screentranslate.model.AiModelInfo
 import com.adam.app_screentranslate.model.AiProvider
 import okhttp3.MediaType.Companion.toMediaType
@@ -11,8 +12,9 @@ import java.util.concurrent.ConcurrentHashMap
 
 /**
  * Google Gemini. One endpoint, but two things have to be negotiated per model: whether it accepts a
- * response schema, and whether it lets us switch its thinking off. Gemini 2.5 thinks by default, and
- * that is the difference between a Flash model answering in seconds and in tens of seconds.
+ * response schema, and which thinking setting it takes. Gemini 2.5 and 3 think by default, and
+ * that is the difference between a Flash model answering in seconds and in tens of seconds, so the
+ * level comes from the settings and walks down [AiReasoning.geminiLadder] when a model refuses it.
  *
  * The key travels in the x-goog-api-key header, never as a query parameter: a URL ends up in logs,
  * proxies and crash reports in a way a header does not.
@@ -21,7 +23,8 @@ class GeminiClient(private val base: String = "https://generativelanguage.google
     override val provider = AiProvider.GEMINI
     private val http = AiHttp()
     private val transports = ConcurrentHashMap<String, AiTransport>()
-    private val thinking = ConcurrentHashMap<String, Boolean>()
+    /** Per model and level: the index of the rung the model accepted. */
+    private val thinking = ConcurrentHashMap<String, Int>()
     private val json = "application/json".toMediaType()
 
     override fun usable(models: List<AiModelInfo>) = GeminiModels.textTranslationModels(models)
@@ -32,8 +35,10 @@ class GeminiClient(private val base: String = "https://generativelanguage.google
             AiTransport.OBJECT -> "Структурированный вывод: JSON без схемы"
             AiTransport.PLAIN -> "Структурированный вывод: только разбор текста"
         },
-        if (thinking[model] == true) "Размышления: включены (отключить не удалось)"
-        else "Размышления: отключены")
+        "Размышления: " + (thinking.entries.firstOrNull { it.key.startsWith("$model|") }?.let { (key, rung) ->
+            val effort = AiEffort.valueOf(key.substringAfterLast('|'))
+            AiReasoning.describe(AiReasoning.geminiLadder(model, effort).getOrNull(rung))
+        } ?: "—"))
 
     override suspend fun models(token: String): List<AiModelInfo> {
         val result = mutableListOf<AiModelInfo>()
@@ -51,21 +56,22 @@ class GeminiClient(private val base: String = "https://generativelanguage.google
         return result
     }
 
-    override suspend fun translate(token: String, model: String, system: String, user: String): String {
+    override suspend fun translate(token: String, model: String, system: String, user: String, effort: AiEffort): String {
         var transport = transports[model] ?: AiTransport.SCHEMA
-        var thinks = thinking[model] ?: false
+        val ladder = AiReasoning.geminiLadder(model, effort)
+        val remembered = "$model|${effort.name}"
+        var rung = thinking[remembered] ?: 0
         while (true) {
             try {
-                val raw = http.fetch(build(token, model, system, user, transport, thinks))
+                val raw = http.fetch(build(token, model, system, user, transport, ladder[rung], search = false, temperature = 0.0))
                 transports[model] = transport
-                thinking[model] = thinks
+                thinking[remembered] = rung
                 return AiProtocol.geminiContent(raw)
             } catch (e: AiHttpException) {
                 if (e.status !in 400..422) throw e
-                val lower = e.reason.lowercase()
                 when {
-                    // Pro models refuse a zero budget, and pre-2.5 models know nothing of thinking.
-                    !thinks && (lower.contains("thinking") || lower.contains("budget")) -> thinks = true
+                    // Pro models refuse a zero budget, some refuse a level, pre-2.5 know no thinking.
+                    ladder[rung] != null && AiReasoning.refusesReasoning(e.reason) && rung < ladder.lastIndex -> rung++
                     transport == AiTransport.SCHEMA -> transport = AiTransport.OBJECT
                     transport == AiTransport.OBJECT -> transport = AiTransport.PLAIN
                     else -> throw e
@@ -74,21 +80,57 @@ class GeminiClient(private val base: String = "https://generativelanguage.google
         }
     }
 
-    private fun build(token: String, model: String, system: String, user: String,
-                      transport: AiTransport, thinks: Boolean): Request {
-        val generation = JSONObject().put("temperature", 0)
+    /**
+     * Grounding with Google Search. Gemini 2.5 refuses to combine it with a JSON response type, so
+     * research asks for plain text and [GameResearch] recovers the object from it.
+     */
+    override suspend fun research(token: String, model: String, system: String, user: String,
+                                  effort: AiEffort, search: Boolean): AiAnswer {
+        val remarks = mutableListOf<String>()
+        var searching = search
+        val ladder = AiReasoning.geminiLadder(model, effort)
+        var rung = 0
+        while (true) {
+            try {
+                val raw = http.fetch(build(token, model, system, user, AiTransport.PLAIN, ladder[rung],
+                    searching, temperature = 0.2), patient = true)
+                val answer = AiResearchProtocol.geminiAnswer(raw)
+                remarks += "Размышления: " + AiReasoning.describe(ladder[rung])
+                if (searching) remarks += "Поиск Google: источников — ${answer.sources.size}"
+                return answer.copy(remarks = remarks)
+            } catch (e: AiHttpException) {
+                if (e.status !in 400..422) throw e
+                when {
+                    searching && AiReasoning.refusesSearch(e.reason) -> {
+                        searching = false
+                        remarks += "Модель отказалась от поиска Google — ответ по её собственным знаниям"
+                    }
+                    ladder[rung] != null && AiReasoning.refusesReasoning(e.reason) && rung < ladder.lastIndex -> rung++
+                    else -> throw e
+                }
+            }
+        }
+    }
+
+    private fun build(token: String, model: String, system: String, user: String, transport: AiTransport,
+                      thinks: GeminiThinking?, search: Boolean, temperature: Double): Request {
+        val generation = JSONObject().put("temperature", temperature)
         when (transport) {
             AiTransport.SCHEMA -> generation.put("responseMimeType", "application/json")
                 .put("responseSchema", AiProtocol.geminiSchema())
             AiTransport.OBJECT -> generation.put("responseMimeType", "application/json")
             AiTransport.PLAIN -> Unit
         }
-        if (!thinks) generation.put("thinkingConfig", JSONObject().put("thinkingBudget", 0))
+        if (thinks != null) generation.put("thinkingConfig", JSONObject().apply {
+            thinks.level?.let { put("thinkingLevel", it) }
+            thinks.budget?.let { put("thinkingBudget", it) }
+        })
         val body = JSONObject()
             .put("systemInstruction", JSONObject().put("parts", JSONArray().put(JSONObject().put("text", system))))
             .put("contents", JSONArray().put(JSONObject().put("role", "user")
                 .put("parts", JSONArray().put(JSONObject().put("text", user)))))
             .put("generationConfig", generation)
+        if (search) body.put("tools", JSONArray().put(JSONObject().put("google_search", JSONObject())))
         return Request.Builder().url("$base/models/$model:generateContent").header(KEY, token)
             .post(body.toString().toRequestBody(json)).build()
     }

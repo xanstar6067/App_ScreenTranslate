@@ -28,6 +28,7 @@ import com.adam.app_screentranslate.translation.ai.AiConnection
 import com.adam.app_screentranslate.translation.ai.AiEngine
 import com.adam.app_screentranslate.translation.ai.AiHttpException
 import com.adam.app_screentranslate.translation.ai.AiPrompts
+import com.adam.app_screentranslate.translation.ai.AiReasoning
 import com.adam.app_screentranslate.translation.ai.GeminiClient
 import com.adam.app_screentranslate.translation.ai.XaiClient
 import kotlinx.coroutines.CancellationException
@@ -46,8 +47,11 @@ class AiPanel(private val config: AiConfigManager, private val scope: CoroutineS
     private val engines = mutableMapOf<AiProvider, AiEngine>()
     private var running: Job? = null
 
-    private fun engine(): AiEngine = engines.getOrPut(config.settings.value.provider) {
-        if (config.settings.value.provider == AiProvider.GEMINI) GeminiClient() else XaiClient()
+    private fun engine(): AiEngine = engine(config.settings.value.provider)
+
+    /** Shared with the games tab, so research and the connection check learn about the same model. */
+    fun engine(provider: AiProvider): AiEngine = engines.getOrPut(provider) {
+        if (provider == AiProvider.GEMINI) GeminiClient() else XaiClient()
     }
 
     val settings get() = config.settings
@@ -100,7 +104,7 @@ class AiPanel(private val config: AiConfigManager, private val scope: CoroutineS
 
     fun check() = start {
         val engine = engine()
-        val (lines, fetched) = AiConnection.check(engine, config.token(), config.settings.value.model)
+        val (lines, fetched) = AiConnection.check(engine, config.token(), config.settings.value.model, config.settings.value.effort)
         if (fetched.isNotEmpty()) config.saveModels(engine.provider, fetched)
         report = lines
     }
@@ -153,8 +157,8 @@ fun AiTab(panel: AiPanel, app: AppSettings, onApp: (AppSettings) -> Unit) {
         }
         Spacer(Modifier.height(10.dp))
         Text(if (ai.provider == AiProvider.GEMINI)
-            "Ключ из Google AI Studio. Модели Flash отвечают заметно быстрее Grok; размышления отключаются автоматически."
-        else "Ключ из консоли xAI. Все текущие модели — reasoning, глубина размышлений понижена до low.",
+            "Ключ из Google AI Studio. Модели Flash отвечают заметно быстрее Grok; размышления настраиваются ниже."
+        else "Ключ из консоли xAI. Все текущие модели — reasoning; глубина размышлений настраивается ниже.",
             color = Muted, fontSize = 11.sp)
     }
 
@@ -233,6 +237,16 @@ fun AiTab(panel: AiPanel, app: AppSettings, onApp: (AppSettings) -> Unit) {
             models.isEmpty() || ai.model.isBlank() -> Muted
             else -> Color(0xFFFFD39B)
         }, fontSize = 12.sp)
+        Spacer(Modifier.height(16.dp))
+        Text("Рассуждение при переводе экрана", fontWeight = FontWeight.Medium, fontSize = 14.sp)
+        Spacer(Modifier.height(8.dp))
+        EffortPicker(ai.provider, ai.model, ai.effort) { panel.update(ai.copy(effort = it)) }
+        if (ai.effort != AiEffort.MINIMAL && AiReasoning.levels(ai.provider, ai.model).isNotEmpty())
+            Text("Экран будет появляться заметно дольше. Для перевода обычно хватает минимальной.",
+                color = Color(0xFFFFD39B), fontSize = 11.sp, modifier = Modifier.padding(top = 4.dp))
+        Spacer(Modifier.height(6.dp))
+        Text("Для ИИ-заполнения профилей игр степень и веб-поиск задаются отдельно, на странице заполнения.",
+            color = Muted, fontSize = 11.sp)
     }
 
     Heading("ПОВЕДЕНИЕ")

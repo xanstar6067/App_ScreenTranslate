@@ -1,6 +1,7 @@
 package com.adam.app_screentranslate.data
 
 import android.content.Context
+import com.adam.app_screentranslate.model.AiEffort
 import com.adam.app_screentranslate.model.AiFallback
 import com.adam.app_screentranslate.model.AiModelInfo
 import com.adam.app_screentranslate.model.AiProvider
@@ -37,7 +38,9 @@ class AiConfigManager(context: Context) {
             .putString(modelKey(value.provider), value.model)
             .putString("fallback", value.fallback.name)
             .putBoolean("repair", value.repair).putString("prompt", value.prompt)
-            .putBoolean("context", value.context).apply()
+            .putBoolean("context", value.context).putString("effort", value.effort.name)
+            .putString("research.effort", value.researchEffort.name)
+            .putBoolean("research.search", value.researchSearch).apply()
         mutable.value = value
         if (value.provider != previous.provider) {
             // Everything provider-scoped follows the switch, including which model is selected.
@@ -86,8 +89,13 @@ class AiConfigManager(context: Context) {
             fallback = AiFallback.entries.firstOrNull { it.name == prefs.getString("fallback", null) } ?: AiFallback.AUTO,
             repair = prefs.getBoolean("repair", true),
             prompt = prefs.getString("prompt", "game") ?: "game",
-            context = prefs.getBoolean("context", true))
+            context = prefs.getBoolean("context", true),
+            effort = effort(prefs.getString("effort", null), AiEffort.MINIMAL),
+            researchEffort = effort(prefs.getString("research.effort", null), AiEffort.MEDIUM),
+            researchSearch = prefs.getBoolean("research.search", true))
     }
+
+    private fun effort(name: String?, default: AiEffort) = AiEffort.entries.firstOrNull { it.name == name } ?: default
 
     private fun readModels(provider: AiProvider): List<AiModelInfo> {
         val raw = prefs.getString(modelsKey(provider), null) ?: return emptyList()

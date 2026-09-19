@@ -18,7 +18,10 @@ class AiTranslationTest {
         override suspend fun models(token: String) = emptyList<AiModelInfo>()
         override fun usable(models: List<AiModelInfo>) = models
         override fun describe(model: String) = emptyList<String>()
-        override suspend fun translate(token: String, model: String, system: String, user: String): String {
+        override suspend fun research(token: String, model: String, system: String, user: String,
+                                      effort: AiEffort, search: Boolean) = AiAnswer("")
+        override suspend fun translate(token: String, model: String, system: String, user: String,
+                                       effort: AiEffort): String {
             calls++
             return answer(user)
         }

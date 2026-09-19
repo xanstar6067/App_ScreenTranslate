@@ -1,5 +1,6 @@
 package com.adam.app_screentranslate.translation.ai
 
+import com.adam.app_screentranslate.model.AiEffort
 import com.adam.app_screentranslate.model.AiModelInfo
 import com.adam.app_screentranslate.model.AiProvider
 import com.adam.app_screentranslate.model.Box
@@ -32,7 +33,15 @@ enum class AiTransport { SCHEMA, OBJECT, PLAIN }
 interface AiEngine {
     val provider: AiProvider
     suspend fun models(token: String): List<AiModelInfo>
-    suspend fun translate(token: String, model: String, system: String, user: String): String
+    suspend fun translate(token: String, model: String, system: String, user: String,
+                          effort: AiEffort = AiEffort.MINIMAL): String
+    /**
+     * A free-form request with the provider's own web search when [search] is set. Used to fill a
+     * game profile, where a slow careful answer is worth waiting for. A model that refuses search
+     * or the reasoning level is asked again without it, and the answer says so in its remarks.
+     */
+    suspend fun research(token: String, model: String, system: String, user: String,
+                         effort: AiEffort, search: Boolean): AiAnswer
     /** Keeps only models that can translate text — no image, video, audio or embedding models. */
     fun usable(models: List<AiModelInfo>): List<AiModelInfo>
     /** What the last successful call to [model] negotiated, for the connection report. */
@@ -46,9 +55,12 @@ interface AiEngine {
 internal class AiHttp {
     private val client = OkHttpClient.Builder().connectTimeout(20, TimeUnit.SECONDS)
         .readTimeout(120, TimeUnit.SECONDS).callTimeout(150, TimeUnit.SECONDS).build()
+    /** Research searches the web and may think at length before the first byte of the answer. */
+    private val patientClient = client.newBuilder()
+        .readTimeout(300, TimeUnit.SECONDS).callTimeout(360, TimeUnit.SECONDS).build()
 
-    suspend fun fetch(request: Request): String = suspendCancellableCoroutine { continuation ->
-        val call = client.newCall(request)
+    suspend fun fetch(request: Request, patient: Boolean = false): String = suspendCancellableCoroutine { continuation ->
+        val call = (if (patient) patientClient else client).newCall(request)
         continuation.invokeOnCancellation { call.cancel() }
         call.enqueue(object : Callback {
             override fun onFailure(call: Call, e: IOException) {
@@ -98,7 +110,8 @@ object AiConnection {
         ScreenTextBlock(1, "Compensation o", Box(0f, 0f, 100f, 20f)),
         ScreenTextBlock(2, "f maintenance", Box(0f, 20f, 100f, 40f)))
 
-    suspend fun check(engine: AiEngine, token: String, model: String): Pair<List<AiCheckLine>, List<AiModelInfo>> {
+    suspend fun check(engine: AiEngine, token: String, model: String,
+              effort: AiEffort = AiEffort.MINIMAL): Pair<List<AiCheckLine>, List<AiModelInfo>> {
         val report = mutableListOf<AiCheckLine>()
         if (token.isBlank()) {
             report += AiCheckLine(false, "Ключ ${engine.provider.label} не задан")
@@ -136,7 +149,7 @@ object AiConnection {
         try {
             val answer = engine.translate(token, model,
                 AiPrompts.system(AiPrompts.DEFAULT, "English", "Russian", repair = true),
-                AiProtocol.payload(PROBE, "English", "Russian"))
+                AiProtocol.payload(PROBE, "English", "Russian"), effort)
             AiProtocol.validate(AiProtocol.parse(answer), PROBE, allowMerge = true)
             engine.describe(model).forEach { report += AiCheckLine(true, it) }
         } catch (e: CancellationException) { throw e }
