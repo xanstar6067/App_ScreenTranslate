@@ -8,6 +8,12 @@ import java.util.Locale
 data class GeminiThinking(val level: String? = null, val budget: Int? = null)
 
 /**
+ * One way of asking an OpenRouter model to think. [enabled] false switches reasoning off on models
+ * that think by default; null for both means the parameter is left out entirely.
+ */
+data class RouterReasoning(val effort: String? = null, val enabled: Boolean? = null)
+
+/**
  * What a model can be asked about reasoning and search. Providers change what each model accepts
  * faster than an app is updated, so nothing here is final: each level comes as a ladder the client
  * walks down when the model refuses a rung, and the last rung always sends nothing at all.
@@ -31,12 +37,17 @@ object AiReasoning {
             gemini(model)!! >= 2.5 -> AiEffort.entries
             else -> emptyList()
         }
+        // The router's catalogue spans every vendor, and an id says nothing about what the model
+        // behind it accepts. Every level is offered; the router drops what the model cannot use.
+        AiProvider.OPENROUTER -> AiEffort.entries
     }
 
     /** Whether the provider's own search is known to work with [model]. The client still adapts. */
     fun searchable(provider: AiProvider, model: String): Boolean = when (provider) {
         AiProvider.XAI -> (grokMajor(model) ?: 4) >= 4
         AiProvider.GEMINI -> (gemini(model) ?: 0.0) >= 2.0
+        // Not the model's own search: the router runs it beside any model and feeds it the pages.
+        AiProvider.OPENROUTER -> true
     }
 
     /**
@@ -74,6 +85,18 @@ object AiReasoning {
         }
     }
 
+    /**
+     * OpenRouter takes the OpenAI-shaped reasoning object. A model that thinks by default is asked
+     * to stop at the minimal level, which is what a screen the player is waiting for needs; the
+     * next rung asks for the shortest thinking instead, for models that refuse to stop.
+     */
+    fun routerLadder(model: String, effort: AiEffort): List<RouterReasoning?> = when (effort) {
+        AiEffort.MINIMAL -> listOf(RouterReasoning(enabled = false), RouterReasoning(effort = "low"), null)
+        AiEffort.LOW -> listOf(RouterReasoning(effort = "low"), null)
+        AiEffort.MEDIUM -> listOf(RouterReasoning(effort = "medium"), RouterReasoning(effort = "high"), null)
+        AiEffort.HIGH -> listOf(RouterReasoning(effort = "high"), null)
+    }
+
     /** A 4xx that names the reasoning parameter: the next rung of the ladder may be accepted. */
     fun refusesReasoning(reason: String): Boolean {
         val lower = reason.lowercase(Locale.ROOT)
@@ -84,6 +107,13 @@ object AiReasoning {
     fun refusesSearch(reason: String): Boolean {
         val lower = reason.lowercase(Locale.ROOT)
         return listOf("tool", "search", "grounding").any { lower.contains(it) }
+    }
+
+    /** How an OpenRouter rung reads in the report. */
+    fun describe(reasoning: RouterReasoning?): String = when {
+        reasoning == null -> "по умолчанию модели"
+        reasoning.enabled == false -> "отключено"
+        else -> reasoning.effort ?: "по умолчанию модели"
     }
 
     /** How a rung reads in the report. */

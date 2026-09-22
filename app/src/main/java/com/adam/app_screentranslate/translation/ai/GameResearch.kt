@@ -53,8 +53,8 @@ data class ResearchResult(
  * The contract for filling a game profile. Pure Kotlin, so what leaves the device and what is
  * accepted back are covered by JVM tests, like the translation contract in [AiProtocol].
  *
- * The answer is asked for as plain JSON rather than through a response schema: both providers
- * refuse, on some models, to combine their search tool with constrained decoding, and a refused
+ * The answer is asked for as plain JSON rather than through a response schema: every provider
+ * refuses, on some models, to combine its search tool with constrained decoding, and a refused
  * search is worth more here than a guaranteed shape. [AiProtocol.unwrap] recovers the object.
  */
 object GameResearch {
@@ -202,10 +202,10 @@ object GameResearch {
  */
 class GameResearcher(private val engine: AiEngine) {
     suspend fun research(request: ResearchRequest, ai: AiSettings, token: String): ResearchResult {
-        if (token.isBlank()) throw AiHttpException(0, "Не указан API-ключ ${ai.provider.label}.")
-        if (ai.model.isBlank()) throw AiHttpException(0, "Не выбрана модель ${ai.provider.label}.")
+        if (token.isBlank()) throw AiHttpException(0, "Не указан API-ключ ${ai.researchProvider.label}.")
+        if (ai.researchModel.isBlank()) throw AiHttpException(0, "Не выбрана модель ${ai.researchProvider.label}.")
         val system = GameResearch.system(ai.researchSearch)
-        val first = engine.research(token, ai.model, system, GameResearch.payload(request),
+        val first = engine.research(token, ai.researchModel, system, GameResearch.payload(request),
             ai.researchEffort, ai.researchSearch)
         val (result, answers) = try { GameResearch.parse(first.text, request) to listOf(first) }
         catch (e: AiFormatException) {
@@ -213,7 +213,7 @@ class GameResearcher(private val engine: AiEngine) {
                 "Rewrite it as the JSON object the instructions describe, keeping its content. " +
                 "Wanted kinds: ${request.kinds.joinToString { it.wire }}; at most ${request.limit} terms.\n\n" +
                 "Previous answer:\n${first.text.take(20_000)}"
-            val second = engine.research(token, ai.model, GameResearch.system(search = false), repair,
+            val second = engine.research(token, ai.researchModel, GameResearch.system(search = false), repair,
                 AiEffort.MINIMAL, search = false)
             GameResearch.parse(second.text, request) to listOf(first, second)
         }
@@ -230,6 +230,24 @@ class GameResearcher(private val engine: AiEngine) {
 object AiResearchProtocol {
     private fun obj(raw: String): JSONObject = try { JSONObject(raw) }
         catch (_: Exception) { throw AiFormatException("The server answer was not a JSON object.") }
+
+    /**
+     * OpenRouter answers in the OpenAI shape, and the web plugin lists the pages it read as
+     * url_citation annotations beside the message.
+     */
+    fun routerAnswer(raw: String): AiAnswer {
+        val message = obj(raw).optJSONArray("choices")?.optJSONObject(0)?.optJSONObject("message")
+            ?: throw AiFormatException("The completion carried no message.")
+        val text = message.optString("content", "").ifBlank { throw AiFormatException("The completion was empty.") }
+        val sources = mutableListOf<AiSource>()
+        message.optJSONArray("annotations")?.let { notes ->
+            for (i in 0 until notes.length()) {
+                val note = notes.optJSONObject(i) ?: continue
+                source(note.optJSONObject("url_citation") ?: note)?.let { sources += it }
+            }
+        }
+        return AiAnswer(text, sources.distinctBy { it.url })
+    }
 
     /** Both xAI endpoints: /chat/completions carries choices, /responses carries output items. */
     fun xaiAnswer(raw: String): AiAnswer {

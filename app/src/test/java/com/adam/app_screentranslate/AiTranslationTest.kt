@@ -103,6 +103,40 @@ class AiTranslationTest {
         assertThrows(AiFormatException::class.java) { AiProtocol.geminiContent("""{"candidates":[]}""") }
     }
 
+    @Test fun routerListDropsWhatCannotTranslateAndGroupsByVendor() {
+        val text = listOf("text")
+        val models = listOf(
+            AiModelInfo("openai/gpt-5", inputModalities = listOf("text", "image"), outputModalities = text),
+            AiModelInfo("anthropic/claude-sonnet-4.5", inputModalities = text, outputModalities = text),
+            AiModelInfo("google/gemini-2.5-flash-image", inputModalities = text, outputModalities = listOf("image")),
+            AiModelInfo("openai/text-embedding-3-large", outputModalities = text),
+            AiModelInfo("black-forest-labs/flux-1.1-pro", outputModalities = listOf("image")),
+            AiModelInfo("openai/whisper-large", inputModalities = listOf("audio"), outputModalities = text),
+            // A gateway that reports no modalities at all still lists text models.
+            AiModelInfo("meta-llama/llama-4-maverick"))
+        assertEquals(listOf("anthropic/claude-sonnet-4.5", "meta-llama/llama-4-maverick", "openai/gpt-5"),
+            OpenRouterModels.textTranslationModels(models).map { it.id })
+    }
+
+    @Test fun routerReasoningIsSwitchedOffBeforeItIsShortened() {
+        // Minimal means "do not think at all" first, and only then "think as little as you can".
+        assertEquals(listOf(RouterReasoning(enabled = false), RouterReasoning(effort = "low"), null),
+            AiReasoning.routerLadder("openai/gpt-5", AiEffort.MINIMAL))
+        assertEquals(listOf(RouterReasoning(effort = "high"), null),
+            AiReasoning.routerLadder("anthropic/claude-sonnet-4.5", AiEffort.HIGH))
+        // The last rung of every ladder sends no reasoning parameter at all.
+        AiEffort.entries.forEach { assertNull(AiReasoning.routerLadder("x/y", it).last()) }
+        assertEquals("отключено", AiReasoning.describe(RouterReasoning(enabled = false)))
+        assertEquals("medium", AiReasoning.describe(RouterReasoning(effort = "medium")))
+        assertEquals("по умолчанию модели", AiReasoning.describe(null as RouterReasoning?))
+    }
+
+    /** An id says nothing about a model behind the router, so no level is hidden from the user. */
+    @Test fun routerOffersEveryLevelAndAlwaysSearches() {
+        assertEquals(AiEffort.entries, AiReasoning.levels(AiProvider.OPENROUTER, "qwen/qwen3-max"))
+        assertTrue(AiReasoning.searchable(AiProvider.OPENROUTER, "qwen/qwen3-max"))
+    }
+
     // --- Промпты --------------------------------------------------------------------------------
 
     @Test fun emptyPlaceholderTakesItsWholeLineAway() {

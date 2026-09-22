@@ -201,6 +201,23 @@ class GameResearchTest {
         assertEquals(1, AiResearchProtocol.xaiAnswer(raw).sources.size)
     }
 
+    @Test fun routerAnswerReadsUrlCitations() {
+        val raw = """{"choices":[{"message":{"content":"{\"a\":1}","annotations":[
+            {"type":"url_citation","url_citation":{"url":"https://www.fandom.com/wiki/x","title":"Wiki"}},
+            {"type":"url_citation","url_citation":{"url":"https://www.fandom.com/wiki/x","title":"Wiki"}},
+            {"type":"file","file":{"name":"x"}}]}}]}"""
+        val answer = AiResearchProtocol.routerAnswer(raw)
+        assertEquals("{\"a\":1}", answer.text)
+        // The same page cited twice is one source; an annotation without a web address is none.
+        assertEquals(listOf("https://www.fandom.com/wiki/x"), answer.sources.map { it.url })
+        assertEquals(listOf("Wiki"), answer.sources.map { it.title })
+    }
+
+    @Test(expected = AiFormatException::class)
+    fun routerAnswerWithoutContentIsRejected() {
+        AiResearchProtocol.routerAnswer("""{"choices":[{"message":{"content":""}}]}""")
+    }
+
     @Test fun geminiAnswerSkipsThoughtsAndReadsGrounding() {
         val raw = """{"candidates":[{"finishReason":"STOP","content":{"parts":[
             {"text":"thinking...","thought":true},{"text":"{\"b\":2}"}]},
@@ -221,6 +238,7 @@ class GameResearchTest {
     private class ScriptedEngine(vararg replies: AiAnswer) : AiEngine {
         val queue = ArrayDeque(replies.toList())
         val calls = mutableListOf<Triple<String, AiEffort, Boolean>>()
+        val models = mutableListOf<String>()
         override val provider = AiProvider.XAI
         override suspend fun models(token: String) = emptyList<AiModelInfo>()
         override fun usable(models: List<AiModelInfo>) = models
@@ -229,16 +247,21 @@ class GameResearchTest {
         override suspend fun research(token: String, model: String, system: String, user: String,
                                       effort: AiEffort, search: Boolean): AiAnswer {
             calls += Triple(user, effort, search)
+            models += model
             return queue.removeFirst()
         }
     }
 
-    private val settings = AiSettings(model = "grok-4.5", researchEffort = AiEffort.HIGH, researchSearch = true)
+    // The researcher reads its own model, not the one the screen translator was set to.
+    private val settings = AiSettings(model = "gemini-flash-latest", provider = AiProvider.GEMINI,
+        researchProvider = AiProvider.XAI, researchModel = "grok-4.5",
+        researchEffort = AiEffort.HIGH, researchSearch = true)
 
     @Test fun researcherPassesSettingsAndSources() = runBlocking {
         val engine = ScriptedEngine(AiAnswer(answer(term("Rapi", "Рапи")),
             listOf(AiSource("fandom", "https://f/")), listOf("Веб-поиск: источников — 1")))
         val result = GameResearcher(engine).research(request(), settings, "token")
+        assertEquals("grok-4.5", engine.models.single())
         assertEquals(AiEffort.HIGH, engine.calls.single().second)
         assertTrue(engine.calls.single().third)
         assertEquals(listOf("https://f/"), result.sources.map { it.url })
@@ -260,7 +283,7 @@ class GameResearchTest {
 
     @Test fun missingKeyOrModelFailsBeforeAnyRequest() = runBlocking {
         val engine = ScriptedEngine()
-        for ((ai, token) in listOf(settings to "", settings.copy(model = "") to "token")) {
+        for ((ai, token) in listOf(settings to "", settings.copy(researchModel = "") to "token")) {
             try { GameResearcher(engine).research(request(), ai, token); fail() }
             catch (_: AiHttpException) { }
         }

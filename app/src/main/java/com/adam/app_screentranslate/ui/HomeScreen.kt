@@ -9,7 +9,6 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
@@ -66,8 +65,6 @@ fun HomeScreen(
             }
             Spacer(Modifier.height(22.dp))
             if (tab == 0) {
-                DemoCard()
-                Spacer(Modifier.height(20.dp))
                 Section {
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Column(Modifier.weight(1f)) {
@@ -285,27 +282,6 @@ fun HomeScreen(
         Column {
             Text(title, fontSize = 14.sp, fontWeight = FontWeight.Medium)
             Text(subtitle, color = Muted, fontSize = 12.sp, modifier = Modifier.padding(top = 4.dp))
-        }
-    }
-}
-@Composable private fun DemoCard() {
-    Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(24.dp))
-        .background(Brush.linearGradient(listOf(Color(0xFF235448), Color(0xFF1B343A)))).padding(22.dp)) {
-        Text("МЕНЬШЕ ГРАНИЦ. БОЛЬШЕ СМЫСЛА.", color = Mint, fontSize = 9.sp, letterSpacing = 1.2.sp)
-        Spacer(Modifier.height(12.dp))
-        Text("Ваша игра.\nНа вашем языке.", fontSize = 30.sp, lineHeight = 35.sp, fontWeight = FontWeight.Bold, color = Color.White)
-        Spacer(Modifier.height(20.dp))
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Column(Modifier.weight(1f)) {
-                Text("MISSION COMPLETE", color = Color(0xFF9BBEB4), fontSize = 10.sp, letterSpacing = 1.sp)
-                Spacer(Modifier.height(6.dp))
-                Text("Задание выполнено", fontSize = 15.sp, color = Ink, fontWeight = FontWeight.Medium,
-                    modifier = Modifier.clip(RoundedCornerShape(7.dp)).background(Color(0xFFE4F8ED)).padding(9.dp))
-            }
-            Spacer(Modifier.width(10.dp))
-            Box(Modifier.size(46.dp).clip(RoundedCornerShape(23.dp)).background(Mint), contentAlignment = Alignment.Center) {
-                Text("A⇄", fontWeight = FontWeight.Bold, color = Ink, fontSize = 18.sp)
-            }
         }
     }
 }

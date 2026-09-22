@@ -11,7 +11,7 @@ import javax.crypto.SecretKey
 import javax.crypto.spec.GCMParameterSpec
 
 /**
- * The xAI token at rest. AES/GCM with the key held by AndroidKeystore, ciphertext in ordinary
+ * An AI provider's key at rest. AES/GCM with the key held by AndroidKeystore, ciphertext in ordinary
  * preferences: a copied settings file is undecryptable anywhere but this device, and the key
  * material never enters the process. The app is already excluded from backup, so nothing leaves.
  *
@@ -72,6 +72,7 @@ class SecureStore(private val prefs: SharedPreferences) {
 
     private companion object {
         const val STORE = "AndroidKeyStore"
+        // The alias predates the second and third provider; renaming it would orphan saved keys.
         const val ALIAS = "lenslate_xai_key"
         const val TRANSFORMATION = "AES/GCM/NoPadding"
         const val VALUE = "token"

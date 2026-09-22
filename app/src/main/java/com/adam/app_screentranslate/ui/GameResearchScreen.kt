@@ -81,12 +81,15 @@ internal fun ResearchPage(panel: GamesPanel, game: GameProfile, app: AppSettings
 @Composable
 private fun ResearchSetup(panel: GamesPanel, game: GameProfile, app: AppSettings, failure: String?) {
     val ai by panel.aiSettings.collectAsState()
-    val hasToken by panel.hasToken.collectAsState()
+    val tokens by panel.tokens.collectAsState()
     var kinds by remember { mutableStateOf(TermKind.entries.toSet()) }
     var notes by rememberSaveable { mutableStateOf(true) }
     var limit by rememberSaveable { mutableIntStateOf(GameResearch.LIMITS[1]) }
     var focus by rememberSaveable { mutableStateOf("") }
-    val ready = hasToken && ai.model.isNotBlank()
+    // The researcher has its own provider and model, chosen apart from the screen translator's.
+    val provider = ai.researchProvider
+    val hasToken = provider in tokens
+    val ready = hasToken && ai.researchModel.isNotBlank()
 
     if (failure != null) {
         Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(16.dp)).background(Warn.copy(alpha = .1f))
@@ -124,32 +127,38 @@ private fun ResearchSetup(panel: GamesPanel, game: GameProfile, app: AppSettings
     Section {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Column(Modifier.weight(1f)) {
-                Text(ai.provider.label, color = Muted, fontSize = 12.sp)
+                Text(provider.label, color = Muted, fontSize = 12.sp)
                 Spacer(Modifier.height(4.dp))
-                Text(ai.model.ifBlank { "Модель не выбрана" }, fontSize = 16.sp, fontWeight = FontWeight.Medium,
-                    color = if (ai.model.isBlank()) Warn else Color.White)
+                Text(ai.researchModel.ifBlank { "Модель не выбрана" }, fontSize = 16.sp, fontWeight = FontWeight.Medium,
+                    color = if (ai.researchModel.isBlank()) Warn else Color.White)
             }
             Text("вкладка «ИИ»", color = Muted, fontSize = 10.sp)
         }
         if (!ready) {
             Spacer(Modifier.height(8.dp))
-            Text(if (!hasToken) "Сохраните ключ ${ai.provider.label} на вкладке «ИИ»." else "Выберите модель на вкладке «ИИ».",
-                color = Warn, fontSize = 12.sp)
+            Text(if (!hasToken) "Сохраните ключ ${provider.label} на вкладке «ИИ»."
+                else "Выберите модель для заполнения глоссария на вкладке «ИИ».", color = Warn, fontSize = 12.sp)
+        } else if (provider != ai.provider) {
+            Spacer(Modifier.height(8.dp))
+            Text("Экран переводит другая модель — ${ai.model.ifBlank { ai.provider.label }}.", color = Muted, fontSize = 11.sp)
         }
         HorizontalDivider(color = Color.White.copy(alpha = .07f), modifier = Modifier.padding(vertical = 14.dp))
 
         Row(verticalAlignment = Alignment.CenterVertically) {
             Column(Modifier.weight(1f)) {
                 Text("Веб-поиск", fontWeight = FontWeight.Medium, fontSize = 14.sp)
-                Text(if (ai.provider == AiProvider.GEMINI) "Поиск Google внутри Gemini" else "Поиск xAI внутри Grok",
-                    color = Muted, fontSize = 11.sp)
+                Text(when (provider) {
+                    AiProvider.GEMINI -> "Поиск Google внутри Gemini"
+                    AiProvider.XAI -> "Поиск xAI внутри Grok"
+                    AiProvider.OPENROUTER -> "Веб-поиск OpenRouter рядом с моделью"
+                }, color = Muted, fontSize = 11.sp)
             }
             Switch(checked = ai.researchSearch, onCheckedChange = { panel.updateAi(ai.copy(researchSearch = it)) })
         }
         Spacer(Modifier.height(6.dp))
         Text(when {
             !ai.researchSearch -> "Модель ответит по собственным знаниям. Быстрее, но о новых и редких играх она может не знать."
-            AiReasoning.searchable(ai.provider, ai.model) ->
+            AiReasoning.searchable(provider, ai.researchModel) ->
                 "Найдёт официальную локализацию, вики и страницы магазина и покажет источники. Дольше и дороже обычного запроса."
             else -> "Эта модель, похоже, не умеет искать. Попытка будет, а при отказе ответ придёт без поиска."
         }, color = Muted, fontSize = 11.sp)
@@ -157,10 +166,10 @@ private fun ResearchSetup(panel: GamesPanel, game: GameProfile, app: AppSettings
         Spacer(Modifier.height(16.dp))
         Text("Степень рассуждения", fontWeight = FontWeight.Medium, fontSize = 14.sp)
         Spacer(Modifier.height(8.dp))
-        EffortPicker(ai.provider, ai.model, ai.researchEffort) { panel.updateAi(ai.copy(researchEffort = it)) }
+        EffortPicker(provider, ai.researchModel, ai.researchEffort) { panel.updateAi(ai.copy(researchEffort = it)) }
     }
 
-    Heading("ЧТО УЙДЁТ В ${ai.provider.label.uppercase()}")
+    Heading("ЧТО УЙДЁТ В ${provider.label.uppercase()}")
     Section {
         Text("Название и package игры, ваши заметки о ней, языки и список уже записанных терминов — только сами термины, без переводов. Снимок экрана и распознанный текст не отправляются.",
             color = Muted, fontSize = 12.sp)

@@ -13,7 +13,7 @@ import org.json.JSONObject
 class AiFormatException(val reason: String) : Exception(reason)
 
 /**
- * The wire contract with xAI: the schema that constrains decoding, the request payload, and the
+ * The wire contract with the model: the schema that constrains decoding, the request payload, and the
  * two checks the answer has to survive. Everything here is deliberately free of Android so the
  * rules that decide whether a screen gets drawn are covered by JVM tests.
  */

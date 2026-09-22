@@ -58,8 +58,7 @@ class GamesPanel(private val store: GameStore, private val context: Context, pri
     val games get() = store.games
     val terms get() = store.terms
     val aiSettings get() = ai.settings
-    val hasToken get() = ai.hasToken
-    val models get() = ai.models
+    val tokens get() = ai.tokens
 
     /** One research at a time: it can run for minutes and costs the user's own quota. */
     var research by mutableStateOf<ResearchState?>(null)
@@ -112,7 +111,8 @@ class GamesPanel(private val store: GameStore, private val context: Context, pri
                 val request = ResearchRequest(game, known, source, AiTranslator.language(languages.target),
                     kinds, notes, limit, focus)
                 val result = withContext(Dispatchers.IO) {
-                    GameResearcher(engine(settings.provider)).research(request, settings, ai.token())
+                    GameResearcher(engine(settings.researchProvider))
+                        .research(request, settings, ai.token(settings.researchProvider))
                 }
                 ResearchState.Done(game.packageName, result, GameResearch.compare(result.terms, known))
             } catch (e: CancellationException) { research = null; throw e }

@@ -17,7 +17,7 @@ enum class OcrEngine { MLKIT, TESSERACT }
 enum class MergeMode(val label: String, val gap: Float) { CAUTIOUS("Осторожное", .35f), NORMAL("Нормальное", .65f), AGGRESSIVE("Агрессивное", 1f) }
 enum class ProviderMode(val label: String) { AUTO("Автоматически"), GOOGLE("Google"), YANDEX("Yandex") }
 enum class TranslationMode(val label: String) { WEB("Обычный"), AI("ИИ") }
-/** Which ordinary translator picks up when xAI cannot answer. NONE reports the error instead. */
+/** Which ordinary translator picks up when the AI cannot answer. NONE reports the error instead. */
 enum class AiFallback(val label: String) { NONE("Не использовать"), GOOGLE("Google"), YANDEX("Yandex"), AUTO("Автоматически") }
 fun AiFallback.provider(): ProviderMode? = when (this) {
     AiFallback.NONE -> null
@@ -59,11 +59,22 @@ data class AppSettings(
     /** Off by default: while it is off, usage statistics are never read at all. */
     val gameDetection: Boolean = false
 )
-enum class AiProvider(val label: String) { XAI("xAI Grok"), GEMINI("Google Gemini") }
+/**
+ * [short] is what fits in a row of three buttons; [label] is what reads in a sentence.
+ */
+enum class AiProvider(val label: String, val short: String) {
+    XAI("xAI Grok", "Grok"), GEMINI("Google Gemini", "Gemini"), OPENROUTER("OpenRouter", "OpenRouter")
+}
+/**
+ * What a model is chosen for. Screen translation wants a fast model and barely any reasoning;
+ * filling a game profile wants a careful one that can search. They are picked separately, provider
+ * and all, because the best model for one is rarely the best for the other.
+ */
+enum class AiRole { TRANSLATE, RESEARCH }
 /**
  * How long a model may think. The provider-neutral scale the settings speak; each client maps it
- * onto what the chosen model accepts (reasoning.effort for xAI, thinkingLevel/thinkingBudget for
- * Gemini) and steps down when the model refuses a level.
+ * onto what the chosen model accepts (reasoning.effort for xAI and OpenRouter,
+ * thinkingLevel/thinkingBudget for Gemini) and steps down when the model refuses a level.
  */
 enum class AiEffort(val label: String, val hint: String) {
     MINIMAL("Мин.", "Быстрее всего: размышления отключены или сведены к минимуму"),
@@ -72,12 +83,17 @@ enum class AiEffort(val label: String, val hint: String) {
     HIGH("Высокая", "Дольше и дороже, но внимательнее")
 }
 /**
- * AI configuration. Token, model and cached model list are kept per provider, so switching back
- * restores what that provider was set to. The tokens live apart from this, encrypted; see SecureStore.
+ * AI configuration. The token and the cached model list are kept per provider, and the chosen model
+ * per provider *and* role, so switching a role back to a provider restores what it was last set to.
+ * The tokens live apart from this, encrypted; see SecureStore.
  */
 data class AiSettings(
     val provider: AiProvider = AiProvider.XAI,
-    val model: String = "", val fallback: AiFallback = AiFallback.AUTO,
+    val model: String = "",
+    /** Provider and model of the game-profile researcher, chosen apart from the translator's. */
+    val researchProvider: AiProvider = AiProvider.XAI,
+    val researchModel: String = "",
+    val fallback: AiFallback = AiFallback.AUTO,
     val repair: Boolean = true, val prompt: String = "game",
     /** Whether a detected game's name, notes and glossary go into the request. */
     val context: Boolean = true,
@@ -87,6 +103,14 @@ data class AiSettings(
     val researchEffort: AiEffort = AiEffort.MEDIUM,
     val researchSearch: Boolean = true
 )
+/** The two roles read and written by one name, so nothing has to branch on the role twice. */
+fun AiSettings.providerFor(role: AiRole) = if (role == AiRole.RESEARCH) researchProvider else provider
+fun AiSettings.modelFor(role: AiRole) = if (role == AiRole.RESEARCH) researchModel else model
+fun AiSettings.effortFor(role: AiRole) = if (role == AiRole.RESEARCH) researchEffort else effort
+fun AiSettings.withProvider(role: AiRole, value: AiProvider) =
+    if (role == AiRole.RESEARCH) copy(researchProvider = value) else copy(provider = value)
+fun AiSettings.withModel(role: AiRole, value: String) =
+    if (role == AiRole.RESEARCH) copy(researchModel = value) else copy(model = value)
 enum class GameOrigin(val label: String) { AUTO("Обнаружена автоматически"), MANUAL("Добавлена вручную") }
 /** Characters, factions and locations are names rather than words; the model is told which is which. */
 enum class TermKind(val label: String, val single: String, val wire: String) {

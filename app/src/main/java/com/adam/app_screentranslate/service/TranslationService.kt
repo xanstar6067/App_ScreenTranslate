@@ -22,9 +22,8 @@ import com.adam.app_screentranslate.ocr.OCRManager
 import com.adam.app_screentranslate.overlay.OverlayController
 import com.adam.app_screentranslate.translation.TranslationManager
 import com.adam.app_screentranslate.game.ForegroundApp
+import com.adam.app_screentranslate.translation.ai.AiEngines
 import com.adam.app_screentranslate.translation.ai.AiTranslator
-import com.adam.app_screentranslate.translation.ai.GeminiClient
-import com.adam.app_screentranslate.translation.ai.XaiClient
 import kotlinx.coroutines.*
 
 class TranslationService : Service() {
@@ -49,7 +48,7 @@ class TranslationService : Service() {
     /** One translator per provider, kept for the session: each engine remembers what it negotiated. */
     private val aiTranslators = mutableMapOf<AiProvider, AiTranslator>()
     private fun aiTranslator(provider: AiProvider) = aiTranslators.getOrPut(provider) {
-        AiTranslator(if (provider == AiProvider.GEMINI) GeminiClient() else XaiClient())
+        AiTranslator(AiEngines.create(provider))
     }
     private val screenEvents = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
@@ -205,7 +204,7 @@ class TranslationService : Service() {
                         val general = app.ai.settings.value
                         // A game's own style wins over the general prompt; its context goes only if allowed.
                         val ai = game?.profile?.prompt?.let { general.copy(prompt = it) } ?: general
-                        val token = withContext(Dispatchers.IO) { app.ai.token() }
+                        val token = withContext(Dispatchers.IO) { app.ai.token(ai.provider) }
                         val outcome = aiTranslator(ai.provider).translate(blocks, settings, ai, token, app.cache,
                             game?.takeIf { ai.context }, emit)
                         aiReason = outcome.reason

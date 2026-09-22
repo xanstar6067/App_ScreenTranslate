@@ -48,6 +48,15 @@ interface AiEngine {
     fun describe(model: String): List<String>
 }
 
+/** The one place a provider becomes a client. Everything else speaks [AiEngine]. */
+object AiEngines {
+    fun create(provider: AiProvider): AiEngine = when (provider) {
+        AiProvider.XAI -> XaiClient()
+        AiProvider.GEMINI -> GeminiClient()
+        AiProvider.OPENROUTER -> OpenRouterClient()
+    }
+}
+
 /**
  * Shared HTTP for every provider. Timeouts are far above what a web translator needs: a reasoning
  * model thinks before it answers and the whole screen waits for it.

@@ -4,8 +4,8 @@ import android.content.ClipData
 import android.os.PersistableBundle
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -26,11 +26,10 @@ import com.adam.app_screentranslate.model.*
 import com.adam.app_screentranslate.translation.ai.AiCheckLine
 import com.adam.app_screentranslate.translation.ai.AiConnection
 import com.adam.app_screentranslate.translation.ai.AiEngine
+import com.adam.app_screentranslate.translation.ai.AiEngines
 import com.adam.app_screentranslate.translation.ai.AiHttpException
 import com.adam.app_screentranslate.translation.ai.AiPrompts
 import com.adam.app_screentranslate.translation.ai.AiReasoning
-import com.adam.app_screentranslate.translation.ai.GeminiClient
-import com.adam.app_screentranslate.translation.ai.XaiClient
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -41,22 +40,26 @@ import kotlinx.coroutines.withContext
 /**
  * State behind the AI tab. Network work and the Keystore both belong off the main thread, and the
  * revealed token is held only until the user hides it again.
+ *
+ * The key section works on one provider at a time — [keyProvider] — which is deliberately not the
+ * provider that translates: a key is set up once per provider, and the two roles may well be on
+ * two different ones.
  */
 class AiPanel(private val config: AiConfigManager, private val scope: CoroutineScope) {
     // Engines are kept for the session: each remembers what its models negotiated.
     private val engines = mutableMapOf<AiProvider, AiEngine>()
     private var running: Job? = null
 
-    private fun engine(): AiEngine = engine(config.settings.value.provider)
-
     /** Shared with the games tab, so research and the connection check learn about the same model. */
-    fun engine(provider: AiProvider): AiEngine = engines.getOrPut(provider) {
-        if (provider == AiProvider.GEMINI) GeminiClient() else XaiClient()
-    }
+    fun engine(provider: AiProvider): AiEngine = engines.getOrPut(provider) { AiEngines.create(provider) }
 
     val settings get() = config.settings
     val models get() = config.models
-    val hasToken get() = config.hasToken
+    val tokens get() = config.tokens
+
+    /** Whose key the key section is editing. Starts on the provider that translates. */
+    var keyProvider by mutableStateOf(config.settings.value.provider)
+        private set
 
     var revealed by mutableStateOf<String?>(null)
         private set
@@ -67,44 +70,63 @@ class AiPanel(private val config: AiConfigManager, private val scope: CoroutineS
 
     fun update(value: AiSettings) = config.update(value)
 
+    /** A revealed key and a report belong to the provider they came from, and stay behind with it. */
+    fun selectKeyProvider(provider: AiProvider) {
+        keyProvider = provider
+        revealed = null
+        report = emptyList()
+    }
+
     fun reveal() {
-        scope.launch { revealed = withContext(Dispatchers.IO) { config.token() } }
+        val provider = keyProvider
+        scope.launch { revealed = withContext(Dispatchers.IO) { config.token(provider) } }
     }
 
     fun hide() { revealed = null }
 
     fun save(token: String) {
+        val provider = keyProvider
         scope.launch {
-            val saved = withContext(Dispatchers.IO) { config.saveToken(token) }
+            val saved = withContext(Dispatchers.IO) { config.saveToken(provider, token) }
             revealed = null
-            report = listOf(if (saved) AiCheckLine(true, "Токен сохранён")
-            else AiCheckLine(false, "Не удалось зашифровать токен: хранилище ключей недоступно"))
+            report = listOf(if (saved) AiCheckLine(true, "Ключ ${provider.label} сохранён")
+            else AiCheckLine(false, "Не удалось зашифровать ключ: хранилище ключей недоступно"))
         }
     }
 
     fun clear() {
-        config.clearProvider()
+        val provider = keyProvider
+        config.clearProvider(provider)
         revealed = null
-        report = listOf(AiCheckLine(true, "Ключ и список моделей удалены"))
+        report = listOf(AiCheckLine(true, "Ключ и список моделей ${provider.label} удалены"))
     }
 
-    fun copy(): String = config.token()
+    fun copy(): String = config.token(keyProvider)
 
     fun refreshModels() = start {
-        val engine = engine()
-        val fetched = engine.usable(engine.models(config.token()))
+        val engine = engine(keyProvider)
+        val fetched = engine.usable(engine.models(config.token(engine.provider)))
         config.saveModels(engine.provider, fetched)
-        val current = config.settings.value.model
+        val chosen = AiRole.entries.map { it to config.settings.value.modelFor(it) }
+            .filter { (role, model) -> model.isNotBlank() && config.settings.value.providerFor(role) == engine.provider }
         report = buildList {
             add(AiCheckLine(fetched.isNotEmpty(), "Текстовых моделей: ${fetched.size}"))
-            if (current.isNotBlank() && fetched.none { it.id == current })
-                add(AiCheckLine(false, "Выбранная модель $current больше недоступна. Выберите другую."))
+            chosen.filter { (_, model) -> fetched.none { it.id == model } }.forEach { (_, model) ->
+                add(AiCheckLine(false, "Выбранная модель $model больше недоступна. Выберите другую."))
+            }
         }
     }
 
     fun check() = start {
-        val engine = engine()
-        val (lines, fetched) = AiConnection.check(engine, config.token(), config.settings.value.model, config.settings.value.effort)
+        val engine = engine(keyProvider)
+        val settings = config.settings.value
+        // The model this provider is actually set to work with, whichever role it holds — or, when
+        // it holds neither, the last one it was set to, so the probe still says something.
+        val role = AiRole.entries.firstOrNull { settings.providerFor(it) == engine.provider }
+        val model = role?.let { settings.modelFor(it) }?.takeIf { it.isNotBlank() }
+            ?: config.remembered(AiRole.TRANSLATE, engine.provider)
+        val (lines, fetched) = AiConnection.check(engine, config.token(engine.provider), model,
+            role?.let { settings.effortFor(it) } ?: AiEffort.MINIMAL)
         if (fetched.isNotEmpty()) config.saveModels(engine.provider, fetched)
         report = lines
     }
@@ -128,16 +150,18 @@ class AiPanel(private val config: AiConfigManager, private val scope: CoroutineS
 fun AiTab(panel: AiPanel, app: AppSettings, onApp: (AppSettings) -> Unit) {
     val ai by panel.settings.collectAsState()
     val models by panel.models.collectAsState()
-    val hasToken by panel.hasToken.collectAsState()
+    val tokens by panel.tokens.collectAsState()
     val clipboard = LocalClipboard.current
     val scope = rememberCoroutineScope()
     var draft by rememberSaveable { mutableStateOf("") }
     var show by rememberSaveable { mutableStateOf(false) }
-    var picking by remember { mutableStateOf(false) }
+    var picking by remember { mutableStateOf<AiRole?>(null) }
+    val editing = panel.keyProvider
     LaunchedEffect(panel.revealed) { panel.revealed?.let { draft = it; show = true } }
 
     Text("ИИ-перевод", fontSize = 25.sp, fontWeight = FontWeight.Bold)
-    Text("Grok или Gemini вместо веб-переводчика", color = Muted, fontSize = 13.sp, modifier = Modifier.padding(top = 6.dp))
+    Text("Grok, Gemini или OpenRouter вместо веб-переводчика", color = Muted, fontSize = 13.sp,
+        modifier = Modifier.padding(top = 6.dp))
 
     Heading("РЕЖИМ ПЕРЕВОДА")
     Section {
@@ -149,23 +173,20 @@ fun AiTab(panel: AiPanel, app: AppSettings, onApp: (AppSettings) -> Unit) {
             color = Muted, fontSize = 11.sp)
     }
 
-    Heading("ПРОВАЙДЕР")
+    Heading("КЛЮЧИ ПРОВАЙДЕРОВ")
     Section {
-        Options(AiProvider.entries, ai.provider, { it.label }) {
-            // Key, model and model list are all per provider; the panel state must not carry over.
-            draft = ""; show = false; panel.hide(); panel.update(ai.copy(provider = it))
+        Options(AiProvider.entries, editing, { it.short }) {
+            draft = ""; show = false; panel.selectKeyProvider(it)
         }
         Spacer(Modifier.height(10.dp))
-        Text(if (ai.provider == AiProvider.GEMINI)
-            "Ключ из Google AI Studio. Модели Flash отвечают заметно быстрее Grok; размышления настраиваются ниже."
-        else "Ключ из консоли xAI. Все текущие модели — reasoning; глубина размышлений настраивается ниже.",
-            color = Muted, fontSize = 11.sp)
-    }
-
-    Heading(if (ai.provider == AiProvider.GEMINI) "API-КЛЮЧ GOOGLE" else "API TOKEN XAI")
-    Section {
+        Text(when (editing) {
+            AiProvider.XAI -> "Ключ из консоли xAI. Все текущие модели — reasoning; глубина размышлений задаётся ниже."
+            AiProvider.GEMINI -> "Ключ из Google AI Studio. Модели Flash отвечают заметно быстрее Grok."
+            AiProvider.OPENROUTER -> "Ключ с openrouter.ai: один счёт на модели всех вендоров сразу. Модель называется «вендор/модель», например openai/gpt-5 или anthropic/claude-sonnet-4.5."
+        }, color = Muted, fontSize = 11.sp)
+        Spacer(Modifier.height(14.dp))
         OutlinedTextField(value = draft, onValueChange = { draft = it }, singleLine = true,
-            label = { Text(if (ai.provider == AiProvider.GEMINI) "API-ключ" else "API token") },
+            label = { Text("API-ключ ${editing.short}") },
             modifier = Modifier.fillMaxWidth(),
             visualTransformation = if (show) VisualTransformation.None else PasswordVisualTransformation(),
             colors = OutlinedTextFieldDefaults.colors(focusedBorderColor = Mint, focusedLabelColor = Mint))
@@ -181,7 +202,7 @@ fun AiTab(panel: AiPanel, app: AppSettings, onApp: (AppSettings) -> Unit) {
             }
             TextButton(onClick = { panel.clear(); draft = ""; show = false },
                 contentPadding = PaddingValues(horizontal = 8.dp)) {
-                Text("Очистить", color = Color(0xFFFFD39B), fontSize = 12.sp)
+                Text("Очистить", color = Warn, fontSize = 12.sp)
             }
         }
         Button(onClick = { panel.save(draft); show = false; draft = "" }, enabled = draft.isNotBlank(),
@@ -190,19 +211,17 @@ fun AiTab(panel: AiPanel, app: AppSettings, onApp: (AppSettings) -> Unit) {
             Text("Сохранить ключ")
         }
         Spacer(Modifier.height(10.dp))
-        Text(if (hasToken) "Ключ ${ai.provider.label} сохранён и зашифрован Android Keystore"
-        else "Ключ ${ai.provider.label} не задан. Без него ИИ-режим не работает.",
-            color = if (hasToken) Mint else Color(0xFFFFD39B), fontSize = 11.sp)
-    }
+        Text(if (editing in tokens) "Ключ ${editing.label} сохранён и зашифрован Android Keystore"
+        else "Ключ ${editing.label} не задан.", color = if (editing in tokens) Mint else Warn, fontSize = 11.sp)
 
-    Heading("ПОДКЛЮЧЕНИЕ")
-    Section {
+        HorizontalDivider(color = Color.White.copy(alpha = .07f), modifier = Modifier.padding(vertical = 14.dp))
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            Button(onClick = { panel.check() }, enabled = hasToken && !panel.busy, modifier = Modifier.weight(1f),
+            Button(onClick = { panel.check() }, enabled = editing in tokens && !panel.busy, modifier = Modifier.weight(1f),
                 colors = ButtonDefaults.buttonColors(containerColor = Mint, contentColor = Ink)) {
                 Text("Проверить", fontSize = 13.sp)
             }
-            OutlinedButton(onClick = { panel.refreshModels() }, enabled = hasToken && !panel.busy, modifier = Modifier.weight(1f)) {
+            OutlinedButton(onClick = { panel.refreshModels() }, enabled = editing in tokens && !panel.busy,
+                modifier = Modifier.weight(1f)) {
                 Text("Обновить модели", color = Mint, fontSize = 13.sp)
             }
         }
@@ -216,36 +235,46 @@ fun AiTab(panel: AiPanel, app: AppSettings, onApp: (AppSettings) -> Unit) {
                 Row(Modifier.padding(vertical = 3.dp)) {
                     Text(if (line.ok) "✓" else "✗", color = if (line.ok) Mint else Color(0xFFFF9B9B),
                         modifier = Modifier.width(22.dp), fontSize = 13.sp)
-                    Text(line.text, fontSize = 12.sp, color = if (line.ok) Color.White else Color(0xFFFFD39B))
+                    Text(line.text, fontSize = 12.sp, color = if (line.ok) Color.White else Warn)
                 }
             }
         }
+        Spacer(Modifier.height(12.dp))
+        Text("Ключ нужен каждому провайдеру, которого вы выбрали ниже: перевод экрана и заполнение глоссария могут работать на разных.",
+            color = Muted, fontSize = 11.sp)
     }
 
-    Heading("АКТИВНАЯ МОДЕЛЬ")
+    Heading("МОДЕЛЬ ДЛЯ ПЕРЕВОДА ЭКРАНА")
     Section {
-        ChoiceRow("Модель", ai.model.ifBlank { "Не выбрана" }) { if (models.isNotEmpty()) picking = true }
-        Spacer(Modifier.height(6.dp))
-        val available = models.any { it.id == ai.model }
-        Text(when {
-            models.isEmpty() -> "Список пуст. Нажмите «Обновить модели»."
-            ai.model.isBlank() -> "Выберите модель из списка."
-            available -> "✓ доступна"
-            else -> "! модель больше недоступна. Выберите другую — сама она не сменится."
-        }, color = when {
-            available -> Mint
-            models.isEmpty() || ai.model.isBlank() -> Muted
-            else -> Color(0xFFFFD39B)
-        }, fontSize = 12.sp)
+        ModelChoice(panel, ai, AiRole.TRANSLATE, models, tokens) { picking = AiRole.TRANSLATE }
         Spacer(Modifier.height(16.dp))
-        Text("Рассуждение при переводе экрана", fontWeight = FontWeight.Medium, fontSize = 14.sp)
+        Text("Рассуждение при переводе", fontWeight = FontWeight.Medium, fontSize = 14.sp)
         Spacer(Modifier.height(8.dp))
         EffortPicker(ai.provider, ai.model, ai.effort) { panel.update(ai.copy(effort = it)) }
         if (ai.effort != AiEffort.MINIMAL && AiReasoning.levels(ai.provider, ai.model).isNotEmpty())
             Text("Экран будет появляться заметно дольше. Для перевода обычно хватает минимальной.",
-                color = Color(0xFFFFD39B), fontSize = 11.sp, modifier = Modifier.padding(top = 4.dp))
-        Spacer(Modifier.height(6.dp))
-        Text("Для ИИ-заполнения профилей игр степень и веб-поиск задаются отдельно, на странице заполнения.",
+                color = Warn, fontSize = 11.sp, modifier = Modifier.padding(top = 4.dp))
+    }
+
+    Heading("МОДЕЛЬ ДЛЯ ЗАПОЛНЕНИЯ ГЛОССАРИЯ")
+    Section {
+        ModelChoice(panel, ai, AiRole.RESEARCH, models, tokens) { picking = AiRole.RESEARCH }
+        Spacer(Modifier.height(14.dp))
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f)) {
+                Text("Веб-поиск", fontWeight = FontWeight.Medium, fontSize = 14.sp)
+                Text("Искать официальную локализацию и вики игры", color = Muted, fontSize = 11.sp)
+            }
+            Switch(checked = ai.researchSearch, onCheckedChange = { panel.update(ai.copy(researchSearch = it)) })
+        }
+        Spacer(Modifier.height(16.dp))
+        Text("Степень рассуждения", fontWeight = FontWeight.Medium, fontSize = 14.sp)
+        Spacer(Modifier.height(8.dp))
+        EffortPicker(ai.researchProvider, ai.researchModel, ai.researchEffort) {
+            panel.update(ai.copy(researchEffort = it))
+        }
+        Spacer(Modifier.height(10.dp))
+        Text("Эта модель работает только на странице «Заполнить профиль с ИИ» во вкладке «Игры»: один долгий запрос вместо перевода экрана. Там же настройки можно изменить перед запуском.",
             color = Muted, fontSize = 11.sp)
     }
 
@@ -299,27 +328,85 @@ fun AiTab(panel: AiPanel, app: AppSettings, onApp: (AppSettings) -> Unit) {
             Text("С контекстом игры к этому добавляются её название и package, ваши заметки о ней и те термины глоссария, что найдены на экране.",
                 color = Muted, fontSize = 13.sp)
         }
+        if (ai.researchProvider != ai.provider) {
+            Spacer(Modifier.height(8.dp))
+            Text("Заполнение глоссария обращается к другому провайдеру — ${ai.researchProvider.label} — и только когда вы сами его запускаете.",
+                color = Muted, fontSize = 13.sp)
+        }
         Spacer(Modifier.height(10.dp))
         Text("Ключи хранятся зашифрованными на этом устройстве, по одному на провайдера, и не попадают в резервные копии Android.",
             color = Muted, fontSize = 11.sp)
     }
 
-    if (picking) AlertDialog(onDismissRequest = { picking = false }, title = { Text("Активная модель") },
+    picking?.let { role ->
+        ModelDialog(models[ai.providerFor(role)].orEmpty(), ai.modelFor(role),
+            onPick = { panel.update(ai.withModel(role, it)); picking = null }) { picking = null }
+    }
+}
+
+/** Provider and model of one role, with the one line that says whether it can actually be used. */
+@Composable
+private fun ModelChoice(panel: AiPanel, ai: AiSettings, role: AiRole,
+                        models: Map<AiProvider, List<AiModelInfo>>, tokens: Set<AiProvider>,
+                        onPick: () -> Unit) {
+    val provider = ai.providerFor(role)
+    val model = ai.modelFor(role)
+    val list = models[provider].orEmpty()
+    Options(AiProvider.entries, provider, { it.short }) { panel.update(ai.withProvider(role, it)) }
+    Spacer(Modifier.height(10.dp))
+    ChoiceRow("Модель", model.ifBlank { "Не выбрана" }) { if (list.isNotEmpty()) onPick() }
+    Spacer(Modifier.height(6.dp))
+    val available = list.any { it.id == model }
+    Text(when {
+        provider !in tokens -> "Ключ ${provider.label} не задан — сохраните его выше."
+        list.isEmpty() -> "Список моделей пуст. Выберите ${provider.short} выше и нажмите «Обновить модели»."
+        model.isBlank() -> "Выберите модель из списка."
+        available -> "✓ доступна"
+        else -> "! модель больше недоступна. Выберите другую — сама она не сменится."
+    }, color = when {
+        available -> Mint
+        provider !in tokens -> Warn
+        list.isEmpty() || model.isBlank() -> Muted
+        else -> Warn
+    }, fontSize = 12.sp)
+}
+
+/**
+ * The model list. OpenRouter alone offers several hundred, so the dialog filters as you type; the
+ * vendors' own lists are short enough that the field simply stays empty.
+ */
+@Composable
+private fun ModelDialog(models: List<AiModelInfo>, selected: String, onPick: (String) -> Unit, onDismiss: () -> Unit) {
+    var query by remember { mutableStateOf("") }
+    val q = query.trim()
+    val matches = if (q.isEmpty()) models
+    else models.filter { model -> model.id.contains(q, true) || model.aliases.any { it.contains(q, true) } }
+    AlertDialog(onDismissRequest = onDismiss, title = { Text("Модель") },
         text = {
-            Column(Modifier.heightIn(max = 430.dp).verticalScroll(rememberScrollState())) {
-                models.forEach { model ->
-                    Column(Modifier.fillMaxWidth().clickable {
-                        panel.update(ai.copy(model = model.id)); picking = false
-                    }.padding(vertical = 12.dp)) {
-                        Text(model.id, fontSize = 15.sp)
-                        model.maxPromptLength?.let {
-                            Text("контекст до $it токенов", color = Muted, fontSize = 11.sp)
+            Column {
+                if (models.size > SEARCHABLE_FROM) {
+                    OutlinedTextField(value = query, onValueChange = { query = it }, singleLine = true,
+                        label = { Text("Поиск среди ${models.size}") }, modifier = Modifier.fillMaxWidth(),
+                        colors = OutlinedTextFieldDefaults.colors(focusedBorderColor = Mint, focusedLabelColor = Mint))
+                    Spacer(Modifier.height(8.dp))
+                }
+                Column(Modifier.heightIn(max = 430.dp).verticalScroll(rememberScrollState())) {
+                    matches.forEach { model ->
+                        Column(Modifier.fillMaxWidth().clickable { onPick(model.id) }.padding(vertical = 12.dp)) {
+                            Text(model.id, fontSize = 15.sp, color = if (model.id == selected) Mint else Color.White)
+                            model.maxPromptLength?.let {
+                                Text("контекст до $it токенов", color = Muted, fontSize = 11.sp)
+                            }
                         }
                     }
+                    if (matches.isEmpty())
+                        Text("Ничего не найдено", color = Muted, fontSize = 13.sp, modifier = Modifier.padding(vertical = 12.dp))
                 }
             }
-        }, confirmButton = { TextButton(onClick = { picking = false }) { Text("Закрыть") } })
+        }, confirmButton = { TextButton(onClick = onDismiss) { Text("Закрыть") } })
 }
+
+private const val SEARCHABLE_FROM = 12
 
 /**
  * A key on the clipboard is still a secret: the sensitive flag keeps Android 13+ from putting it in
