@@ -16,8 +16,11 @@ class GameResearchTest {
 
     private fun answer(vararg terms: String, notes: String = "Военная фантастика.", found: Boolean = true) =
         """{"game_found":$found,"official_title":"GODDESS OF VICTORY: NIKKE","notes":"$notes","terms":[${terms.joinToString(",")}]}"""
-    private fun term(term: String, translation: String, kind: String = "character", keep: Boolean = false, basis: String = "official") =
-        """{"term":"$term","translation":"$translation","kind":"$kind","keep":$keep,"basis":"$basis","comment":"c"}"""
+    private fun term(term: String, translation: String, kind: String = "character", keep: Boolean = false,
+                     basis: String = "official", gender: String? = null): String {
+        val genderField = if (gender != null) ",\"gender\":\"$gender\"" else ""
+        return """{"term":"$term","translation":"$translation","kind":"$kind"$genderField,"keep":$keep,"basis":"$basis","comment":"c"}"""
+    }
 
     // --- Рассуждение и поиск ----------------------------------------------------------------------
 
@@ -96,6 +99,7 @@ class GameResearchTest {
         assertTrue(GameResearch.system(true).contains("Search the web"))
         assertTrue(GameResearch.system(false).contains("no web access"))
         assertFalse(GameResearch.system(true).contains("\${"))
+        assertTrue(GameResearch.system(true).contains("\"gender\""))
     }
 
     // --- Разбор ответа ----------------------------------------------------------------------------
@@ -117,6 +121,19 @@ class GameResearchTest {
         assertTrue(result.terms[2].entry.keep)
         assertEquals(TermKind.TERM, result.terms[3].entry.kind)
         assertEquals(TermBasis.SUGGESTED, result.terms[3].basis)
+    }
+
+    @Test fun genderIsKeptOnlyForACharacter() {
+        val raw = answer(term("Rapi", "Рапи", gender = "female"),
+            term("Ark", "Ковчег", kind = "location", gender = "female"),
+            term("Anis", "Анис", gender = "unknown"), term("Neon", "Неон"))
+        val result = GameResearch.parse(raw, request())
+        val byTerm = result.terms.associateBy { it.entry.term }
+        assertEquals(Gender.FEMALE, byTerm.getValue("Rapi").entry.gender)
+        // A location has no gender of its own, even when the model sends one.
+        assertEquals(Gender.UNKNOWN, byTerm.getValue("Ark").entry.gender)
+        assertEquals(Gender.UNKNOWN, byTerm.getValue("Anis").entry.gender)
+        assertEquals(Gender.UNKNOWN, byTerm.getValue("Neon").entry.gender)
     }
 
     @Test fun parseDropsUnwantedKindsAndRespectsLimitAndNotesSwitch() {
@@ -147,6 +164,14 @@ class GameResearchTest {
         val proposals = GameResearch.compare(terms, known)
         assertEquals(listOf(TermStatus.SAME, TermStatus.CONFLICT, TermStatus.NEW), proposals.map { it.status })
         assertEquals(8L, proposals[1].existing?.id)
+    }
+
+    @Test fun compareFlagsAGenderChangeAsAConflictEvenWithTheSameRendering() {
+        val withGender = known + GlossaryEntry("Rapi", "Рапи", TermKind.CHARACTER, gender = Gender.FEMALE, id = 9)
+        val same = GameResearch.compare(listOf(ResearchTerm(GlossaryEntry("Rapi", "Рапи", TermKind.CHARACTER, gender = Gender.FEMALE))), withGender)
+        assertEquals(TermStatus.SAME, same.single().status)
+        val regendered = GameResearch.compare(listOf(ResearchTerm(GlossaryEntry("Rapi", "Рапи", TermKind.CHARACTER, gender = Gender.NEUTER))), withGender)
+        assertEquals(TermStatus.CONFLICT, regendered.single().status)
     }
 
     @Test fun notesAreAppendedAfterThePlayers() {

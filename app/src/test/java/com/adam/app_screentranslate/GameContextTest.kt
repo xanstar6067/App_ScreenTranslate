@@ -17,7 +17,7 @@ class GameContextTest {
         GlossaryEntry("Commander", "Командир"),
         GlossaryEntry("Ark", "Ковчег", TermKind.LOCATION),
         GlossaryEntry("NIKKE", "NIKKE", keep = true),
-        GlossaryEntry("Rapi", "Рапи", TermKind.CHARACTER))
+        GlossaryEntry("Rapi", "Рапи", TermKind.CHARACTER, gender = Gender.FEMALE))
 
     private fun block(id: Long, text: String, top: Float = id * 30f) =
         ScreenTextBlock(id, text, Box(0f, top, 200f, top + 20f), detectedLanguage = "en")
@@ -92,6 +92,9 @@ class GameContextTest {
         assertEquals("character", byTerm.getValue("Rapi").getString("kind"))
         assertEquals("location", byTerm.getValue("Ark").getString("kind"))
         assertFalse(byTerm.getValue("Rapture").has("kind"))
+        // A character's gender travels with them; an entry with no gender set carries none at all.
+        assertEquals("female", byTerm.getValue("Rapi").getString("gender"))
+        assertFalse(byTerm.getValue("Ark").has("gender"))
     }
 
     // --- Промпт ---------------------------------------------------------------------------------
@@ -107,6 +110,7 @@ class GameContextTest {
         assertFalse(without.contains("{{"))
         // The glossary rule belongs to the contract and holds with or without a game.
         assertTrue(without.contains("glossary is authoritative"))
+        assertTrue(without.contains("gender"))
     }
 
     @Test fun blankNotesLeaveNoEmptyHeading() {
@@ -183,6 +187,8 @@ class GameContextTest {
         assertEquals(a, AiContext.fingerprint(GameContext(nikke, glossary.reversed())))
         assertNotEquals(a, AiContext.fingerprint(GameContext(nikke, glossary.dropLast(1))))
         assertNotEquals(a, AiContext.fingerprint(GameContext(nikke.copy(notes = "Other"), glossary)))
+        val regendered = glossary.map { if (it.term == "Rapi") it.copy(gender = Gender.NEUTER) else it }
+        assertNotEquals("A character's gender is part of the context", a, AiContext.fingerprint(GameContext(nikke, regendered)))
         assertEquals(12, a.length)
     }
 }

@@ -312,7 +312,11 @@ private fun GameDetail(panel: GamesPanel, game: GameProfile, onResearch: () -> U
                     fontWeight = FontWeight.Bold, modifier = Modifier.padding(top = 14.dp, bottom = 2.dp))
                 items.forEach { entry ->
                     Row(Modifier.fillMaxWidth().clickable { editing = entry }.padding(vertical = 8.dp)) {
-                        Text(entry.term, fontSize = 14.sp, modifier = Modifier.weight(1f))
+                        Column(Modifier.weight(1f)) {
+                            Text(entry.term, fontSize = 14.sp)
+                            if (entry.kind == TermKind.CHARACTER && entry.gender != Gender.UNKNOWN)
+                                Text(entry.gender.label, fontSize = 11.sp, color = Muted)
+                        }
                         Text(if (entry.keep) "не переводить" else entry.translation, fontSize = 14.sp,
                             color = if (entry.keep) Muted else Mint)
                     }
@@ -379,6 +383,7 @@ internal fun EntryDialog(entry: GlossaryEntry, onSave: (GlossaryEntry, () -> Uni
     var translation by remember { mutableStateOf(entry.translation) }
     var kind by remember { mutableStateOf(entry.kind) }
     var keep by remember { mutableStateOf(entry.keep) }
+    var gender by remember { mutableStateOf(entry.gender) }
     var duplicate by remember { mutableStateOf(false) }
     val valid = term.isNotBlank() && (keep || translation.isNotBlank())
     AlertDialog(onDismissRequest = onDismiss,
@@ -396,13 +401,19 @@ internal fun EntryDialog(entry: GlossaryEntry, onSave: (GlossaryEntry, () -> Uni
                     Text("Не переводить", fontSize = 14.sp)
                 }
                 Spacer(Modifier.height(6.dp))
-                Options(TermKind.entries, kind, { it.single }) { kind = it }
+                Options(TermKind.entries, kind, { it.single }) { kind = it; if (it != TermKind.CHARACTER) gender = Gender.UNKNOWN }
+                if (kind == TermKind.CHARACTER) {
+                    Spacer(Modifier.height(10.dp))
+                    Text("Пол персонажа", fontSize = 12.sp, color = Muted)
+                    Spacer(Modifier.height(6.dp))
+                    Options(Gender.entries, gender, { it.label }) { gender = it }
+                }
             }
         },
         confirmButton = {
             TextButton(enabled = valid, onClick = {
                 onSave(entry.copy(term = term.trim(), translation = if (keep) term.trim() else translation.trim(),
-                    kind = kind, keep = keep)) { duplicate = true }
+                    kind = kind, keep = keep, gender = gender)) { duplicate = true }
             }) { Text("Сохранить") }
         },
         dismissButton = {

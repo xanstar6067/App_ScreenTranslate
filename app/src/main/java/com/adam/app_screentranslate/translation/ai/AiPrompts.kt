@@ -35,6 +35,9 @@ object AiPrompts {
         - the glossary is authoritative: render each listed term as its translation says, inflected
           as the sentence requires; where the translation equals the term, keep the term as it is.
           Entries of kind character, faction or location are names, not words to interpret.
+        - a glossary entry may carry gender (male, female, neuter or plural): a character's own sex
+          or grammatical gender. Use it to agree verbs, adjectives and pronouns referring to that
+          character in target_language, even where the source text carries no gender of its own.
     """.trimIndent()
 
     val builtIn: List<AiPrompt> = listOf(

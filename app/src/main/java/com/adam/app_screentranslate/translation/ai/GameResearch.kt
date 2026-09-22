@@ -3,6 +3,7 @@ package com.adam.app_screentranslate.translation.ai
 import com.adam.app_screentranslate.model.AiEffort
 import com.adam.app_screentranslate.model.AiSettings
 import com.adam.app_screentranslate.model.GameProfile
+import com.adam.app_screentranslate.model.Gender
 import com.adam.app_screentranslate.model.GlossaryEntry
 import com.adam.app_screentranslate.model.TermKind
 import org.json.JSONArray
@@ -86,6 +87,9 @@ object GameResearch {
           Latin letters — get keep: true and a translation equal to the term.
         - kind is one of: character, faction, location, term. "term" covers items, abilities,
           currencies, game mechanics and interface words specific to this game.
+        - for a character, set "gender" to their own sex or grammatical gender in the target
+          language: male, female, neuter or plural. Omit it, or use unknown, when the game never
+          makes it clear. Never set gender for a faction, location or term.
         - Choose what a player actually reads on screen often. Skip generic words any dictionary
           translates correctly ("Settings", "Attack", "Level").
         - Never repeat an entry of known_terms. Only include kinds listed in wanted_kinds, and at
@@ -100,8 +104,8 @@ object GameResearch {
 
         Answer with one JSON object and nothing else — no markdown, no citation marks inside strings:
         {"game_found": true, "official_title": "...", "notes": "...",
-         "terms": [{"term": "...", "translation": "...", "kind": "character", "keep": false,
-                    "basis": "official", "comment": "..."}]}
+         "terms": [{"term": "...", "translation": "...", "kind": "character", "gender": "female",
+                    "keep": false, "basis": "official", "comment": "..."}]}
     """.trimIndent()
 
     /** Everything about the game that leaves the device, in one place. No screen text, ever. */
@@ -148,7 +152,10 @@ object GameResearch {
             if (!seen.add(term.lowercase(Locale.ROOT))) continue
             val basis = TermBasis.entries.firstOrNull { it.wire == item.optString("basis").trim().lowercase(Locale.ROOT) }
                 ?: TermBasis.SUGGESTED
-            terms += ResearchTerm(GlossaryEntry(term, if (keep) term else translation, kind, keep), basis,
+            val gender = if (kind == TermKind.CHARACTER)
+                Gender.entries.firstOrNull { it.wire == item.optString("gender").trim().lowercase(Locale.ROOT) } ?: Gender.UNKNOWN
+            else Gender.UNKNOWN
+            terms += ResearchTerm(GlossaryEntry(term, if (keep) term else translation, kind, keep, gender), basis,
                 item.optString("comment", "").trim().take(200))
             if (terms.size >= request.limit) break
         }
@@ -167,7 +174,8 @@ object GameResearch {
             val known = byTerm[proposal.entry.term.lowercase(Locale.ROOT)]
             when {
                 known == null -> ResearchProposal(proposal, TermStatus.NEW)
-                known.keep == proposal.entry.keep && known.rendering.equals(proposal.entry.rendering, ignoreCase = true) ->
+                known.keep == proposal.entry.keep && known.gender == proposal.entry.gender &&
+                    known.rendering.equals(proposal.entry.rendering, ignoreCase = true) ->
                     ResearchProposal(proposal, TermStatus.SAME, known)
                 else -> ResearchProposal(proposal, TermStatus.CONFLICT, known)
             }

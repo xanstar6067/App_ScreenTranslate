@@ -93,10 +93,17 @@ enum class TermKind(val label: String, val single: String, val wire: String) {
     TERM("Термины", "Термин", "term"), CHARACTER("Персонажи", "Персонаж", "character"),
     FACTION("Фракции", "Фракция", "faction"), LOCATION("Локации", "Локация", "location")
 }
+/** Grammatical gender the target language needs to agree a character's name, pronoun or title with. */
+enum class Gender(val label: String, val wire: String) {
+    UNKNOWN("Не указан", "unknown"), MALE("Мужской", "male"), FEMALE("Женский", "female"),
+    NEUTER("Средний", "neuter"), PLURAL("Мн. число", "plural")
+}
 data class GlossaryEntry(
     val term: String, val translation: String, val kind: TermKind = TermKind.TERM,
     /** The term stays as it is in the translation, like a title or a brand. */
-    val keep: Boolean = false, val id: Long = 0
+    val keep: Boolean = false,
+    /** Meaningful only for a character: how the target language should agree with them. */
+    val gender: Gender = Gender.UNKNOWN, val id: Long = 0
 ) {
     /** What the translation must contain for this term. */
     val rendering get() = if (keep) term else translation

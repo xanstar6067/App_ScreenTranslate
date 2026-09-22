@@ -2,6 +2,7 @@ package com.adam.app_screentranslate.translation.ai
 
 import com.adam.app_screentranslate.model.AiFragment
 import com.adam.app_screentranslate.model.Box
+import com.adam.app_screentranslate.model.Gender
 import com.adam.app_screentranslate.model.GlossaryEntry
 import com.adam.app_screentranslate.model.ScreenTextBlock
 import com.adam.app_screentranslate.model.TermKind
@@ -67,6 +68,7 @@ object AiProtocol {
             glossary.forEach { entry ->
                 val item = JSONObject().put("term", entry.term).put("translation", entry.rendering)
                 if (entry.kind != TermKind.TERM) item.put("kind", entry.kind.wire)
+                if (entry.gender != Gender.UNKNOWN) item.put("gender", entry.gender.wire)
                 terms.put(item)
             }
             root.put("glossary", terms)

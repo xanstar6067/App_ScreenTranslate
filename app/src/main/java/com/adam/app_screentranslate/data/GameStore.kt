@@ -8,6 +8,7 @@ import android.database.sqlite.SQLiteOpenHelper
 import androidx.core.database.sqlite.transaction
 import com.adam.app_screentranslate.model.GameOrigin
 import com.adam.app_screentranslate.model.GameProfile
+import com.adam.app_screentranslate.model.Gender
 import com.adam.app_screentranslate.model.GlossaryEntry
 import com.adam.app_screentranslate.model.TermKind
 import kotlinx.coroutines.Dispatchers
@@ -20,7 +21,7 @@ import kotlinx.coroutines.withContext
  * nothing else: no usage history, no recognized text. Like the rest of the app's data it stays out
  * of Android backup.
  */
-class GameStore(context: Context) : SQLiteOpenHelper(context, "games.db", null, 1) {
+class GameStore(context: Context) : SQLiteOpenHelper(context, "games.db", null, 2) {
     private val mutableGames = MutableStateFlow<List<GameProfile>>(emptyList())
     /** Every profile, the most recently translated first. */
     val games = mutableGames.asStateFlow()
@@ -36,10 +37,12 @@ class GameStore(context: Context) : SQLiteOpenHelper(context, "games.db", null, 
         // NOCASE on the term: "Rapture" and "rapture" are one entry, not two that disagree.
         db.execSQL("""CREATE TABLE glossary(id INTEGER PRIMARY KEY AUTOINCREMENT, pkg TEXT NOT NULL,
             term TEXT NOT NULL COLLATE NOCASE, translation TEXT NOT NULL, kind TEXT NOT NULL,
-            keep INTEGER NOT NULL, UNIQUE(pkg, term))""")
+            keep INTEGER NOT NULL, gender TEXT NOT NULL DEFAULT 'UNKNOWN', UNIQUE(pkg, term))""")
     }
 
-    override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) = Unit
+    override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
+        if (oldVersion < 2) db.execSQL("ALTER TABLE glossary ADD COLUMN gender TEXT NOT NULL DEFAULT 'UNKNOWN'")
+    }
 
     suspend fun refresh() = withContext(Dispatchers.IO) { reload() }
 
@@ -86,12 +89,13 @@ class GameStore(context: Context) : SQLiteOpenHelper(context, "games.db", null, 
     }
 
     suspend fun glossary(pkg: String): List<GlossaryEntry> = withContext(Dispatchers.IO) {
-        readableDatabase.query("glossary", arrayOf("id", "term", "translation", "kind", "keep"),
+        readableDatabase.query("glossary", arrayOf("id", "term", "translation", "kind", "keep", "gender"),
             "pkg=?", arrayOf(pkg), null, null, "term COLLATE NOCASE").use { c ->
             buildList {
                 while (c.moveToNext()) add(GlossaryEntry(c.getString(1), c.getString(2),
                     TermKind.entries.firstOrNull { it.name == c.getString(3) } ?: TermKind.TERM,
-                    c.getInt(4) != 0, c.getLong(0)))
+                    c.getInt(4) != 0, Gender.entries.firstOrNull { it.name == c.getString(5) } ?: Gender.UNKNOWN,
+                    c.getLong(0)))
             }
         }
     }
@@ -100,7 +104,7 @@ class GameStore(context: Context) : SQLiteOpenHelper(context, "games.db", null, 
     suspend fun save(pkg: String, entry: GlossaryEntry): Boolean = withContext(Dispatchers.IO) {
         val values = ContentValues().apply {
             put("pkg", pkg); put("term", entry.term.trim()); put("translation", entry.rendering.trim())
-            put("kind", entry.kind.name); put("keep", if (entry.keep) 1 else 0)
+            put("kind", entry.kind.name); put("keep", if (entry.keep) 1 else 0); put("gender", entry.gender.name)
         }
         val ok = try {
             if (entry.id == 0L) writableDatabase.insertOrThrow("glossary", null, values) != -1L
@@ -121,7 +125,7 @@ class GameStore(context: Context) : SQLiteOpenHelper(context, "games.db", null, 
             for (entry in entries) {
                 val values = ContentValues().apply {
                     put("pkg", pkg); put("term", entry.term.trim()); put("translation", entry.rendering.trim())
-                    put("kind", entry.kind.name); put("keep", if (entry.keep) 1 else 0)
+                    put("kind", entry.kind.name); put("keep", if (entry.keep) 1 else 0); put("gender", entry.gender.name)
                 }
                 val ok = try {
                     if (entry.id == 0L) insertWithOnConflict("glossary", null, values, SQLiteDatabase.CONFLICT_IGNORE) != -1L

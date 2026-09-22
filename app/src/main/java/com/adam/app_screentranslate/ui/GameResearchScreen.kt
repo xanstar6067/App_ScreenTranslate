@@ -415,6 +415,8 @@ private fun ProposalRow(proposal: ResearchProposal, edited: GlossaryEntry?, chec
             Spacer(Modifier.height(5.dp))
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Badge(proposal.term.basis)
+                if (entry.kind == TermKind.CHARACTER && entry.gender != Gender.UNKNOWN)
+                    Text("  ${entry.gender.label}", color = Muted, fontSize = 10.sp)
                 if (edited != null) Text("  изменено", color = Sky, fontSize = 10.sp)
             }
             if (proposal.term.comment.isNotBlank())
