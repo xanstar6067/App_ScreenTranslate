@@ -65,6 +65,48 @@ class AiPanel(private val config: AiConfigManager, private val scope: CoroutineS
     var keyProvider by mutableStateOf(config.settings.value.provider)
         private set
 
+    /**
+     * Which model the connection check probes. It is a diagnostic of its own, not a role: the check
+     * used to silently take whichever role happened to use this provider, which made a green report
+     * say nothing about the model the user was actually looking at. Session state — checking a model
+     * is not choosing it, and nothing here is written to the settings.
+     */
+    var probeModel by mutableStateOf(defaultProbe(config.settings.value.provider))
+        private set
+
+    fun selectProbeModel(model: String) { probeModel = model }
+
+    /** What this provider is set to work with, translation first, or the last model it was set to. */
+    private fun defaultProbe(provider: AiProvider): String {
+        val settings = config.settings.value
+        AiRole.entries.forEach { role ->
+            if (settings.providerFor(role) == provider && settings.modelFor(role).isNotBlank())
+                return settings.modelFor(role)
+        }
+        return AiRole.entries.firstNotNullOfOrNull { config.remembered(it, provider).ifBlank { null } }.orEmpty()
+    }
+
+    /**
+     * The reasoning level the probe sends. A model that a role already uses is probed exactly as
+     * that role will use it; anything else is probed at the level the screen would use.
+     */
+    fun probeEffort(): AiEffort {
+        val settings = config.settings.value
+        val role = AiRole.entries.firstOrNull {
+            settings.providerFor(it) == keyProvider && settings.modelFor(it) == probeModel && probeModel.isNotBlank()
+        }
+        return role?.let { settings.effortFor(it) } ?: AiEffort.MINIMAL
+    }
+
+    /** Which role, if any, the probed model belongs to — so the screen can say so. */
+    fun probeRole(): AiRole? {
+        val settings = config.settings.value
+        if (probeModel.isBlank()) return null
+        return AiRole.entries.firstOrNull {
+            settings.providerFor(it) == keyProvider && settings.modelFor(it) == probeModel
+        }
+    }
+
     var revealed by mutableStateOf<String?>(null)
         private set
     var busy by mutableStateOf(false)
@@ -77,6 +119,7 @@ class AiPanel(private val config: AiConfigManager, private val scope: CoroutineS
     /** A revealed key and a report belong to the provider they came from, and stay behind with it. */
     fun selectKeyProvider(provider: AiProvider) {
         keyProvider = provider
+        probeModel = defaultProbe(provider)
         revealed = null
         report = emptyList()
     }
@@ -101,6 +144,8 @@ class AiPanel(private val config: AiConfigManager, private val scope: CoroutineS
     fun clear() {
         val provider = keyProvider
         config.clearProvider(provider)
+        // The models this key could reach are gone; an id left aimed at them would only mislead.
+        probeModel = defaultProbe(provider)
         revealed = null
         report = listOf(AiCheckLine(true, "Ключ и список моделей ${provider.label} удалены"))
     }
@@ -109,12 +154,17 @@ class AiPanel(private val config: AiConfigManager, private val scope: CoroutineS
 
     fun refreshModels() = start {
         val engine = engine(keyProvider)
-        val fetched = engine.usable(engine.models(config.token(engine.provider)))
+        val listed = engine.models(config.token(engine.provider))
+        val fetched = engine.usable(listed)
+        val hidden = listed.distinctBy { it.id }.size - fetched.size
         config.saveModels(engine.provider, fetched)
         val chosen = AiRole.entries.map { it to config.settings.value.modelFor(it) }
             .filter { (role, model) -> model.isNotBlank() && config.settings.value.providerFor(role) == engine.provider }
         report = buildList {
             add(AiCheckLine(fetched.isNotEmpty(), "Текстовых моделей: ${fetched.size}"))
+            // Without this a model missing because of our own filter looks exactly like a model
+            // the provider never sent.
+            if (hidden > 0) add(AiCheckLine(true, "Скрыто как нетекстовые: $hidden"))
             chosen.filter { (_, model) -> fetched.none { it.id == model } }.forEach { (_, model) ->
                 add(AiCheckLine(false, "Выбранная модель $model больше недоступна. Выберите другую."))
             }
@@ -123,14 +173,7 @@ class AiPanel(private val config: AiConfigManager, private val scope: CoroutineS
 
     fun check() = start {
         val engine = engine(keyProvider)
-        val settings = config.settings.value
-        // The model this provider is actually set to work with, whichever role it holds — or, when
-        // it holds neither, the last one it was set to, so the probe still says something.
-        val role = AiRole.entries.firstOrNull { settings.providerFor(it) == engine.provider }
-        val model = role?.let { settings.modelFor(it) }?.takeIf { it.isNotBlank() }
-            ?: config.remembered(AiRole.TRANSLATE, engine.provider)
-        val (lines, fetched) = AiConnection.check(engine, config.token(engine.provider), model,
-            role?.let { settings.effortFor(it) } ?: AiEffort.MINIMAL)
+        val (lines, fetched) = AiConnection.check(engine, config.token(engine.provider), probeModel, probeEffort())
         if (fetched.isNotEmpty()) config.saveModels(engine.provider, fetched)
         report = lines
     }
@@ -160,7 +203,9 @@ fun AiTab(panel: AiPanel, app: AppSettings, onApp: (AppSettings) -> Unit) {
     var draft by rememberSaveable { mutableStateOf("") }
     var show by rememberSaveable { mutableStateOf(false) }
     var picking by remember { mutableStateOf<AiRole?>(null) }
+    var probing by remember { mutableStateOf(false) }
     val editing = panel.keyProvider
+    val probeList = models[editing].orEmpty()
     LaunchedEffect(panel.revealed) { panel.revealed?.let { draft = it; show = true } }
 
     Text("ИИ-перевод", fontSize = 25.sp, fontWeight = FontWeight.Bold)
@@ -218,7 +263,25 @@ fun AiTab(panel: AiPanel, app: AppSettings, onApp: (AppSettings) -> Unit) {
         Text(if (editing in tokens) "Ключ ${editing.label} сохранён и зашифрован Android Keystore"
         else "Ключ ${editing.label} не задан.", color = if (editing in tokens) Mint else Warn, fontSize = 11.sp)
 
-        HorizontalDivider(color = Color.White.copy(alpha = .07f), modifier = Modifier.padding(vertical = 14.dp))
+        Spacer(Modifier.height(12.dp))
+        Text("Ключ нужен каждому провайдеру, которого вы выбрали ниже: перевод экрана и заполнение глоссария могут работать на разных.",
+            color = Muted, fontSize = 11.sp)
+    }
+
+    Heading("ПРОВЕРКА ПОДКЛЮЧЕНИЯ")
+    Section {
+        Text("Провайдер: ${editing.label}", color = Muted, fontSize = 12.sp)
+        Spacer(Modifier.height(4.dp))
+        ChoiceRow("Проверяемая модель", panel.probeModel.ifBlank { "Не выбрана" }) {
+            if (probeList.isNotEmpty() || panel.probeModel.isNotBlank()) probing = true
+        }
+        Spacer(Modifier.height(6.dp))
+        Text(when (panel.probeRole()) {
+            AiRole.TRANSLATE -> "Этой моделью переводится экран. Рассуждение в пробе — как у неё: ${panel.probeEffort().label}."
+            AiRole.RESEARCH -> "Этой моделью заполняется глоссарий. Рассуждение в пробе — как у неё: ${panel.probeEffort().label}."
+            null -> "Модель не назначена ни одной роли — проба уйдёт с минимальным рассуждением."
+        }, color = Muted, fontSize = 11.sp)
+        Spacer(Modifier.height(14.dp))
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             Button(onClick = { panel.check() }, enabled = editing in tokens && !panel.busy, modifier = Modifier.weight(1f),
                 colors = ButtonDefaults.buttonColors(containerColor = Mint, contentColor = Ink)) {
@@ -244,7 +307,7 @@ fun AiTab(panel: AiPanel, app: AppSettings, onApp: (AppSettings) -> Unit) {
             }
         }
         Spacer(Modifier.height(12.dp))
-        Text("Ключ нужен каждому провайдеру, которого вы выбрали ниже: перевод экрана и заполнение глоссария могут работать на разных.",
+        Text("Проверка отправляет настоящий пробный перевод из двух блоков — выбор модели здесь ничего не меняет в настройках ниже.",
             color = Muted, fontSize = 11.sp)
     }
 
@@ -343,9 +406,14 @@ fun AiTab(panel: AiPanel, app: AppSettings, onApp: (AppSettings) -> Unit) {
     }
 
     picking?.let { role ->
-        ModelDialog(models[ai.providerFor(role)].orEmpty(), ai.modelFor(role), role,
+        ModelDialog(models[ai.providerFor(role)].orEmpty(), ai.modelFor(role),
+            screen = role == AiRole.TRANSLATE,
             onPick = { panel.update(ai.withModel(role, it)); picking = null }) { picking = null }
     }
+
+    // Choosing here aims the check and nothing else: no role's model changes.
+    if (probing) ModelDialog(probeList, panel.probeModel, screen = false,
+        onPick = { panel.selectProbeModel(it); probing = false }) { probing = false }
 }
 
 /** Provider and model of one role, with the one line that says whether it can actually be used. */
@@ -395,9 +463,8 @@ private fun ModelChoice(panel: AiPanel, ai: AiSettings, role: AiRole,
  * button then costs real money, and the price list is the only place that says so.
  */
 @Composable
-private fun ModelDialog(models: List<AiModelInfo>, selected: String, role: AiRole,
+private fun ModelDialog(models: List<AiModelInfo>, selected: String, screen: Boolean,
                         onPick: (String) -> Unit, onDismiss: () -> Unit) {
-    val screen = role == AiRole.TRANSLATE
     var query by rememberSaveable { mutableStateOf("") }
     var confirming by remember { mutableStateOf<AiModelInfo?>(null) }
     val matches = ModelSearch.apply(models, query)
@@ -414,13 +481,27 @@ private fun ModelDialog(models: List<AiModelInfo>, selected: String, role: AiRol
                     colors = OutlinedTextFieldDefaults.colors(focusedBorderColor = Mint, focusedLabelColor = Mint))
                 Spacer(Modifier.height(10.dp))
                 Column(Modifier.heightIn(max = 400.dp).verticalScroll(rememberScrollState())) {
+                    // A model can exist before the provider's listing admits it. What is typed here
+                    // goes into the request as it stands; the provider is the one that decides.
+                    val typed = query.trim().takeIf {
+                        ModelSearch.looksLikeModelId(it) && matches.none { model -> model.id == it }
+                    }
+                    typed?.let { id ->
+                        Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(10.dp))
+                            .clickable { onPick(id) }.padding(vertical = 10.dp, horizontal = 2.dp)) {
+                            Text("Использовать «$id»", fontSize = 15.sp, color = Mint)
+                            Text("Модели нет в списке — id уйдёт в запрос как есть. Для только что вышедших.",
+                                color = Muted, fontSize = 11.sp, modifier = Modifier.padding(top = 2.dp))
+                        }
+                        HorizontalDivider(color = Color.White.copy(alpha = .07f))
+                    }
                     matches.forEach { model ->
                         ModelRow(model, model.id == selected, screen) {
                             if (AiPricing.warns(model)) confirming = model else onPick(model.id)
                         }
                     }
-                    if (matches.isEmpty()) Text(
-                        if (models.isEmpty()) "Список пуст. Нажмите «Обновить модели»." else "Ничего не найдено",
+                    if (matches.isEmpty() && typed == null) Text(
+                        if (models.isEmpty()) "Список пуст. Нажмите «Обновить модели»." else "Ничего не найдено. Введите точный id, чтобы взять модель вручную.",
                         color = Muted, fontSize = 13.sp, modifier = Modifier.padding(vertical = 12.dp))
                 }
             }

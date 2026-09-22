@@ -11,6 +11,15 @@ object XaiModels {
     /** Named for xAI alone; the media and embedding families are common to every provider. */
     private val excludedNames = listOf("imagine", "multi-agent")
 
+    /**
+     * The rich listing wins where both know a model — it is the one with modalities and prices —
+     * and everything the minimal listing knows about on its own is added after it.
+     */
+    fun merge(rich: List<AiModelInfo>, plain: List<AiModelInfo>): List<AiModelInfo> {
+        val known = rich.map { it.id }.toSet()
+        return rich + plain.filter { it.id !in known }
+    }
+
     fun textTranslationModels(models: List<AiModelInfo>): List<AiModelInfo> =
         models.filter { isTextTranslationModel(it) }.distinctBy { it.id }.sortedByDescending { it.id }
 

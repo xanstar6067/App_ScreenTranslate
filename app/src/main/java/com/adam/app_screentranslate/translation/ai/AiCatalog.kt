@@ -87,6 +87,18 @@ object ModelSearch {
         return "$tier$id"
     }
 
+    /**
+     * Whether what was typed could be a model id rather than a search. A provider can ship a model
+     * hours before its listing mentions it, and refusing to send an id the user knows is real would
+     * make the app the only thing standing between them and a model they are paying for.
+     */
+    fun looksLikeModelId(query: String): Boolean {
+        val value = query.trim()
+        if (value.length < 3 || value.any { it.isWhitespace() }) return false
+        if (!value.first().isLetterOrDigit()) return false
+        return value.any { it.isDigit() } || value.contains('/') || value.contains('-')
+    }
+
     private fun strip(value: String) = value.filterNot { it in SEPARATORS }
 }
 

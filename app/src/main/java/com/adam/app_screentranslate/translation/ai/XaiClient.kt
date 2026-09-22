@@ -38,18 +38,28 @@ class XaiClient(private val base: String = "https://api.x.ai/v1") : AiEngine {
         "Рассуждение: " + (efforts.entries.firstOrNull { it.key.startsWith("$model|") }?.value
             ?.let { if (it == NONE) "по умолчанию модели" else it } ?: "—"))
 
+    /**
+     * Both listings, merged. They are not the same list: the rich one carries modalities and prices,
+     * the minimal OpenAI-compatible one carries only ids — and the two are not updated together, so
+     * a model released this week can appear in one of them days before the other. Taking only the
+     * richer one is what hides a brand-new model from the picker.
+     */
     override suspend fun models(token: String): List<AiModelInfo> {
-        val language = try { http.fetch(get(token, "language-models")) } catch (e: CancellationException) { throw e }
-            catch (e: AiHttpException) { if (e.status in listOf(401, 403)) throw e else null }
-            catch (_: IOException) { null }
-        if (language != null) {
-            val models = obj(language).optJSONArray("models")
-            if (models != null) return (0 until models.length()).mapNotNull { models.optJSONObject(it)?.asModel() }
-        }
-        // Older and self-hosted xAI-compatible gateways only answer the minimal listing.
-        val data = obj(http.fetch(get(token, "models"))).optJSONArray("data")
-            ?: throw AiHttpException(0, "Ответ со списком моделей не распознан.")
-        return (0 until data.length()).mapNotNull { data.optJSONObject(it)?.asModel() }
+        val rich = fetchModels(token, "language-models", "models")
+        val plain = fetchModels(token, "models", "data")
+        if (rich.isEmpty() && plain.isEmpty()) throw AiHttpException(0, "Ответ со списком моделей не распознан.")
+        return XaiModels.merge(rich, plain)
+    }
+
+    /** A listing that is missing or broken is not fatal while the other one answers. */
+    private suspend fun fetchModels(token: String, path: String, field: String): List<AiModelInfo> {
+        val raw = try { http.fetch(get(token, path)) }
+            catch (e: CancellationException) { throw e }
+            // A refused key is the same answer from both, and worth reporting as itself.
+            catch (e: AiHttpException) { if (e.status in listOf(401, 403)) throw e else return emptyList() }
+            catch (_: IOException) { return emptyList() }
+        val array = runCatching { JSONObject(raw).optJSONArray(field) }.getOrNull() ?: return emptyList()
+        return (0 until array.length()).mapNotNull { array.optJSONObject(it)?.asModel() }
     }
 
     override suspend fun translate(token: String, model: String, system: String, user: String, effort: AiEffort): String {

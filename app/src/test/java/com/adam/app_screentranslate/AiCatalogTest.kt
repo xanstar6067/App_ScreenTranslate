@@ -6,6 +6,7 @@ import com.adam.app_screentranslate.translation.ai.MediaModels
 import com.adam.app_screentranslate.translation.ai.ModelSearch
 import com.adam.app_screentranslate.translation.ai.OpenRouterModels
 import com.adam.app_screentranslate.translation.ai.PriceTier
+import com.adam.app_screentranslate.translation.ai.XaiModels
 import org.junit.Assert.*
 import org.junit.Test
 
@@ -92,6 +93,27 @@ class AiCatalogTest {
 
     @Test fun anEmptyQueryChangesNothing() {
         assertEquals(catalogue, ModelSearch.apply(catalogue, "   "))
+    }
+
+    @Test fun anIdMayBeTypedByHandWhenTheListingIsBehind() {
+        // A model can exist before the provider's listing admits it, or before a key is allowed it.
+        listOf("grok-4.7", "openai/gpt-5.5", "claude-opus-4-5", "gemini-3-flash").forEach {
+            assertTrue(it, ModelSearch.looksLikeModelId(it))
+        }
+        // A search is not an id: words, spaces and stray punctuation stay a search.
+        listOf("gem", "claude sonnet", "  ", "?!", "ab").forEach {
+            assertFalse(it, ModelSearch.looksLikeModelId(it))
+        }
+    }
+
+    @Test fun theTwoXaiListingsAreMergedRatherThanChosenBetween() {
+        val rich = listOf(AiModelInfo("grok-4.6", outputModalities = listOf("text"), promptPrice = 3.0))
+        // The minimal listing knows a newly shipped model that the rich one has not caught up with.
+        val plain = listOf(AiModelInfo("grok-4.6"), AiModelInfo("grok-4.7"))
+        val merged = XaiModels.merge(rich, plain)
+        assertEquals(listOf("grok-4.6", "grok-4.7"), merged.map { it.id })
+        // Where both know a model, the listing with modalities and prices is the one kept.
+        assertEquals(3.0, merged.first().promptPrice!!, .001)
     }
 
     // --- Цена -------------------------------------------------------------------------------------

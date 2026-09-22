@@ -33,6 +33,25 @@ class GameResearchTest {
         assertFalse(AiReasoning.searchable(AiProvider.XAI, "grok-3"))
     }
 
+    /**
+     * A model shipped after this code was written. Nothing about it is special — that is the point:
+     * the version is read from the id, so grok-4.7 gets the same levels, the same ladder and the
+     * same endpoint as every other grok-4, with no entry anywhere naming it.
+     */
+    @Test fun aModelReleasedLaterIsHandledByVersionRatherThanByName() {
+        assertEquals(4, AiReasoning.grokMajor("grok-4.7"))
+        assertEquals(AiEffort.entries, AiReasoning.levels(AiProvider.XAI, "grok-4.7"))
+        assertTrue(AiReasoning.searchable(AiProvider.XAI, "grok-4.7"))
+        assertTrue(XaiClient.prefersResponsesApi("grok-4.7"))
+        assertEquals(listOf("low", null), AiReasoning.xaiLadder("grok-4.7", AiEffort.MINIMAL))
+        assertEquals(listOf("medium", "high", null), AiReasoning.xaiLadder("grok-4.7", AiEffort.MEDIUM))
+        assertEquals(listOf("high", null), AiReasoning.xaiLadder("grok-4.7", AiEffort.HIGH))
+        // The dated and non-reasoning builds of the same family keep their own answers.
+        assertEquals(AiEffort.entries, AiReasoning.levels(AiProvider.XAI, "grok-4.20-0309-reasoning"))
+        assertTrue(AiReasoning.levels(AiProvider.XAI, "grok-4.20-0309-non-reasoning").isEmpty())
+        assertEquals(listOf(null), AiReasoning.xaiLadder("grok-4.20-0309-non-reasoning", AiEffort.HIGH))
+    }
+
     @Test fun xaiLadderNeverDisablesReasoningAndEndsWithoutIt() {
         assertEquals(listOf("low", null), AiReasoning.xaiLadder("grok-4.5", AiEffort.MINIMAL))
         assertEquals(listOf("medium", "high", null), AiReasoning.xaiLadder("grok-4.5", AiEffort.MEDIUM))
