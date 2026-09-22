@@ -58,7 +58,10 @@ class AiConfigManager(context: Context) {
                 .put("aliases", JSONArray(model.aliases))
                 .put("input_modalities", JSONArray(model.inputModalities))
                 .put("output_modalities", JSONArray(model.outputModalities))
-                .put("max_prompt_length", model.maxPromptLength ?: 0))
+                .put("max_prompt_length", model.maxPromptLength ?: 0)
+                // -1 keeps "the provider states no price" apart from a genuinely free model.
+                .put("prompt_price", model.promptPrice ?: -1.0)
+                .put("completion_price", model.completionPrice ?: -1.0))
         }
         prefs.edit().putString(modelsKey(provider), array.toString()).apply()
         mutableModels.value = mutableModels.value + (provider to models)
@@ -123,7 +126,9 @@ class AiConfigManager(context: Context) {
                     item.optJSONArray("aliases").strings(),
                     item.optJSONArray("input_modalities").strings(),
                     item.optJSONArray("output_modalities").strings(),
-                    item.optInt("max_prompt_length").takeIf { it > 0 })
+                    item.optInt("max_prompt_length").takeIf { it > 0 },
+                    item.optDouble("prompt_price", -1.0).takeIf { it >= 0 },
+                    item.optDouble("completion_price", -1.0).takeIf { it >= 0 })
             }
         }.getOrDefault(emptyList())
     }

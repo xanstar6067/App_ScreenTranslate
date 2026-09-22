@@ -156,8 +156,8 @@ class GeminiClient(private val base: String = "https://generativelanguage.google
  * model that answers generateContent with text can translate a screen.
  */
 object GeminiModels {
-    private val excluded = listOf("embedding", "embed", "aqa", "imagen", "veo", "tts",
-        "image", "audio", "live", "computer-use")
+    /** Named for Gemini alone; media and embedding families are common to every provider. */
+    private val excluded = listOf("aqa", "veo", "live", "computer-use")
 
     fun textTranslationModels(models: List<AiModelInfo>): List<AiModelInfo> =
         models.filter { isTextTranslationModel(it) }.distinctBy { it.id }.sortedByDescending { it.id }
@@ -165,6 +165,7 @@ object GeminiModels {
     fun isTextTranslationModel(model: AiModelInfo): Boolean {
         val id = model.id.lowercase()
         if (excluded.any { id.contains(it) }) return false
+        if (MediaModels.isMedia(model)) return false
         // Methods arrive in outputModalities; an empty list means a gateway that does not report them.
         return model.outputModalities.isEmpty() || model.outputModalities.any { it == "generateContent" }
     }

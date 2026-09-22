@@ -2,6 +2,7 @@ package com.adam.app_screentranslate.ui
 
 import android.content.ClipData
 import android.os.PersistableBundle
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -28,8 +29,11 @@ import com.adam.app_screentranslate.translation.ai.AiConnection
 import com.adam.app_screentranslate.translation.ai.AiEngine
 import com.adam.app_screentranslate.translation.ai.AiEngines
 import com.adam.app_screentranslate.translation.ai.AiHttpException
+import com.adam.app_screentranslate.translation.ai.AiPricing
 import com.adam.app_screentranslate.translation.ai.AiPrompts
 import com.adam.app_screentranslate.translation.ai.AiReasoning
+import com.adam.app_screentranslate.translation.ai.ModelSearch
+import com.adam.app_screentranslate.translation.ai.PriceTier
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -274,7 +278,7 @@ fun AiTab(panel: AiPanel, app: AppSettings, onApp: (AppSettings) -> Unit) {
             panel.update(ai.copy(researchEffort = it))
         }
         Spacer(Modifier.height(10.dp))
-        Text("Эта модель работает только на странице «Заполнить профиль с ИИ» во вкладке «Игры»: один долгий запрос вместо перевода экрана. Там же настройки можно изменить перед запуском.",
+        Text("Эта модель работает только на странице «Заполнить профиль с ИИ» во вкладке «Игры»: один долгий запрос по вашей команде, а не на каждом экране. Но это самый дорогой запрос в приложении: с веб-поиском модель делает несколько поисковых вызовов и читает найденные страницы целиком.",
             color = Muted, fontSize = 11.sp)
     }
 
@@ -339,7 +343,7 @@ fun AiTab(panel: AiPanel, app: AppSettings, onApp: (AppSettings) -> Unit) {
     }
 
     picking?.let { role ->
-        ModelDialog(models[ai.providerFor(role)].orEmpty(), ai.modelFor(role),
+        ModelDialog(models[ai.providerFor(role)].orEmpty(), ai.modelFor(role), role,
             onPick = { panel.update(ai.withModel(role, it)); picking = null }) { picking = null }
     }
 }
@@ -369,44 +373,117 @@ private fun ModelChoice(panel: AiPanel, ai: AiSettings, role: AiRole,
         list.isEmpty() || model.isBlank() -> Muted
         else -> Warn
     }, fontSize = 12.sp)
+    // What the chosen model costs, where the choice was made rather than only in the picker.
+    val chosen = list.firstOrNull { it.id == model }
+    val tier = chosen?.let { AiPricing.tier(it) }
+    chosen?.let { AiPricing.summary(it, role == AiRole.TRANSLATE) }?.let {
+        Text(it, color = if (tier == PriceTier.DANGEROUS) Warn else Muted, fontSize = 11.sp,
+            modifier = Modifier.padding(top = 4.dp))
+    }
+    if (tier == PriceTier.DANGEROUS || tier == PriceTier.EXPENSIVE)
+        Text(if (role == AiRole.TRANSLATE) "Столько стоит примерно каждое нажатие плавающей кнопки."
+            else "Заполнение глоссария — запрос намного длиннее экрана, а с веб-поиском и страницы из поиска тоже оплачиваются.",
+            color = Warn, fontSize = 11.sp, modifier = Modifier.padding(top = 4.dp))
 }
 
 /**
- * The model list. OpenRouter alone offers several hundred, so the dialog filters as you type; the
- * vendors' own lists are short enough that the field simply stays empty.
+ * The model list — the same for every provider, because a list of four and a list of four hundred
+ * are the same problem once one of them is OpenRouter's. Search is always there rather than
+ * appearing past some size, so the tab works the same way whichever provider is chosen.
+ *
+ * A model dear enough to matter is confirmed rather than just chosen: one tap of the floating
+ * button then costs real money, and the price list is the only place that says so.
  */
 @Composable
-private fun ModelDialog(models: List<AiModelInfo>, selected: String, onPick: (String) -> Unit, onDismiss: () -> Unit) {
-    var query by remember { mutableStateOf("") }
-    val q = query.trim()
-    val matches = if (q.isEmpty()) models
-    else models.filter { model -> model.id.contains(q, true) || model.aliases.any { it.contains(q, true) } }
+private fun ModelDialog(models: List<AiModelInfo>, selected: String, role: AiRole,
+                        onPick: (String) -> Unit, onDismiss: () -> Unit) {
+    val screen = role == AiRole.TRANSLATE
+    var query by rememberSaveable { mutableStateOf("") }
+    var confirming by remember { mutableStateOf<AiModelInfo?>(null) }
+    val matches = ModelSearch.apply(models, query)
     AlertDialog(onDismissRequest = onDismiss, title = { Text("Модель") },
         text = {
             Column {
-                if (models.size > SEARCHABLE_FROM) {
-                    OutlinedTextField(value = query, onValueChange = { query = it }, singleLine = true,
-                        label = { Text("Поиск среди ${models.size}") }, modifier = Modifier.fillMaxWidth(),
-                        colors = OutlinedTextFieldDefaults.colors(focusedBorderColor = Mint, focusedLabelColor = Mint))
-                    Spacer(Modifier.height(8.dp))
-                }
-                Column(Modifier.heightIn(max = 430.dp).verticalScroll(rememberScrollState())) {
+                OutlinedTextField(value = query, onValueChange = { query = it }, singleLine = true,
+                    label = { Text("Поиск среди ${models.size}") },
+                    placeholder = { Text("gem, claude sonnet, gpt…", fontSize = 13.sp) },
+                    trailingIcon = {
+                        if (query.isNotEmpty()) TextButton(onClick = { query = "" }) { Text("✕", color = Muted) }
+                    },
+                    modifier = Modifier.fillMaxWidth(),
+                    colors = OutlinedTextFieldDefaults.colors(focusedBorderColor = Mint, focusedLabelColor = Mint))
+                Spacer(Modifier.height(10.dp))
+                Column(Modifier.heightIn(max = 400.dp).verticalScroll(rememberScrollState())) {
                     matches.forEach { model ->
-                        Column(Modifier.fillMaxWidth().clickable { onPick(model.id) }.padding(vertical = 12.dp)) {
-                            Text(model.id, fontSize = 15.sp, color = if (model.id == selected) Mint else Color.White)
-                            model.maxPromptLength?.let {
-                                Text("контекст до $it токенов", color = Muted, fontSize = 11.sp)
-                            }
+                        ModelRow(model, model.id == selected, screen) {
+                            if (AiPricing.warns(model)) confirming = model else onPick(model.id)
                         }
                     }
-                    if (matches.isEmpty())
-                        Text("Ничего не найдено", color = Muted, fontSize = 13.sp, modifier = Modifier.padding(vertical = 12.dp))
+                    if (matches.isEmpty()) Text(
+                        if (models.isEmpty()) "Список пуст. Нажмите «Обновить модели»." else "Ничего не найдено",
+                        color = Muted, fontSize = 13.sp, modifier = Modifier.padding(vertical = 12.dp))
                 }
             }
         }, confirmButton = { TextButton(onClick = onDismiss) { Text("Закрыть") } })
+
+    confirming?.let { model ->
+        AlertDialog(onDismissRequest = { confirming = null },
+            title = { Text("Очень дорогая модель") },
+            text = {
+                Column {
+                    Text(model.id, fontWeight = FontWeight.Medium)
+                    Spacer(Modifier.height(8.dp))
+                    AiPricing.summary(model, screen)?.let { Text(it, color = Warn, fontSize = 13.sp) }
+                    Spacer(Modifier.height(10.dp))
+                    Text(if (screen) "Столько будет стоить примерно каждое нажатие плавающей кнопки. С включённым рассуждением — заметно больше: размышления оплачиваются как ответ."
+                        else "Заполнение глоссария — один длинный запрос на игру. С веб-поиском и высокой степенью рассуждения он стоит как десятки экранов.",
+                        color = Muted, fontSize = 12.sp)
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { onPick(model.id); confirming = null }) { Text("Всё равно выбрать", color = Warn) }
+            },
+            dismissButton = { TextButton(onClick = { confirming = null }) { Text("Отмена") } })
+    }
 }
 
-private const val SEARCHABLE_FROM = 12
+/** One row of the list: what the model is called, how much context it has and what it costs. */
+@Composable
+private fun ModelRow(model: AiModelInfo, chosen: Boolean, screen: Boolean, onClick: () -> Unit) {
+    val tier = AiPricing.tier(model)
+    Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(10.dp)).clickable(onClick = onClick)
+        .padding(vertical = 10.dp, horizontal = 2.dp)) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(model.id, fontSize = 15.sp, color = if (chosen) Mint else Color.White,
+                fontWeight = if (chosen) FontWeight.SemiBold else FontWeight.Normal,
+                modifier = Modifier.weight(1f, fill = false))
+            if (tier != PriceTier.UNKNOWN && tier != PriceTier.MODERATE) {
+                Spacer(Modifier.width(8.dp))
+                PriceBadge(tier)
+            }
+        }
+        AiPricing.summary(model, screen)?.let {
+            Text(it, color = if (tier == PriceTier.DANGEROUS) Warn else Muted, fontSize = 11.sp,
+                modifier = Modifier.padding(top = 3.dp))
+        }
+        model.maxPromptLength?.let {
+            Text("контекст до $it токенов", color = Muted, fontSize = 11.sp, modifier = Modifier.padding(top = 2.dp))
+        }
+    }
+}
+
+@Composable
+private fun PriceBadge(tier: PriceTier) {
+    val color = when (tier) {
+        PriceTier.FREE, PriceTier.CHEAP -> Mint
+        PriceTier.DANGEROUS -> Color(0xFFFF9B9B)
+        PriceTier.EXPENSIVE -> Warn
+        else -> Muted
+    }
+    Text(tier.label, color = color, fontSize = 10.sp, fontWeight = FontWeight.SemiBold,
+        modifier = Modifier.clip(RoundedCornerShape(6.dp)).background(color.copy(alpha = .12f))
+            .padding(horizontal = 7.dp, vertical = 3.dp))
+}
 
 /**
  * A key on the clipboard is still a secret: the sensitive flag keeps Android 13+ from putting it in

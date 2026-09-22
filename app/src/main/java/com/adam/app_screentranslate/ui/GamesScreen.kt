@@ -59,6 +59,8 @@ class GamesPanel(private val store: GameStore, private val context: Context, pri
     val terms get() = store.terms
     val aiSettings get() = ai.settings
     val tokens get() = ai.tokens
+    /** Only for what the research model costs; the choice itself is made on the AI tab. */
+    val models get() = ai.models
 
     /** One research at a time: it can run for minutes and costs the user's own quota. */
     var research by mutableStateOf<ResearchState?>(null)

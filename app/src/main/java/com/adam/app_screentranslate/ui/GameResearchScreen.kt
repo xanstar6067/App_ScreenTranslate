@@ -19,9 +19,11 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.adam.app_screentranslate.model.*
+import com.adam.app_screentranslate.translation.ai.AiPricing
 import com.adam.app_screentranslate.translation.ai.AiReasoning
 import com.adam.app_screentranslate.translation.ai.AiResearchProtocol
 import com.adam.app_screentranslate.translation.ai.GameResearch
+import com.adam.app_screentranslate.translation.ai.PriceTier
 import com.adam.app_screentranslate.translation.ai.ResearchProposal
 import com.adam.app_screentranslate.translation.ai.TermBasis
 import com.adam.app_screentranslate.translation.ai.TermStatus
@@ -82,6 +84,7 @@ internal fun ResearchPage(panel: GamesPanel, game: GameProfile, app: AppSettings
 private fun ResearchSetup(panel: GamesPanel, game: GameProfile, app: AppSettings, failure: String?) {
     val ai by panel.aiSettings.collectAsState()
     val tokens by panel.tokens.collectAsState()
+    val models by panel.models.collectAsState()
     var kinds by remember { mutableStateOf(TermKind.entries.toSet()) }
     var notes by rememberSaveable { mutableStateOf(true) }
     var limit by rememberSaveable { mutableIntStateOf(GameResearch.LIMITS[1]) }
@@ -142,6 +145,13 @@ private fun ResearchSetup(panel: GamesPanel, game: GameProfile, app: AppSettings
             Spacer(Modifier.height(8.dp))
             Text("Экран переводит другая модель — ${ai.model.ifBlank { ai.provider.label }}.", color = Muted, fontSize = 11.sp)
         }
+        // This one press is the most expensive thing the app does, so its price is shown next to it.
+        val chosen = models[provider].orEmpty().firstOrNull { it.id == ai.researchModel }
+        val tier = chosen?.let { AiPricing.tier(it) }
+        chosen?.let { AiPricing.summary(it, screen = false) }?.let {
+            Spacer(Modifier.height(8.dp))
+            Text(it, color = if (tier == PriceTier.DANGEROUS) Warn else Muted, fontSize = 11.sp)
+        }
         HorizontalDivider(color = Color.White.copy(alpha = .07f), modifier = Modifier.padding(vertical = 14.dp))
 
         Row(verticalAlignment = Alignment.CenterVertically) {
@@ -169,10 +179,16 @@ private fun ResearchSetup(panel: GamesPanel, game: GameProfile, app: AppSettings
         EffortPicker(provider, ai.researchModel, ai.researchEffort) { panel.updateAi(ai.copy(researchEffort = it)) }
     }
 
-    Heading("ЧТО УЙДЁТ В ${provider.label.uppercase()}")
+    Heading("ЧТО УЙДЁТ В ${provider.label.uppercase()} И СКОЛЬКО ЭТО СТОИТ")
     Section {
         Text("Название и package игры, ваши заметки о ней, языки и список уже записанных терминов — только сами термины, без переводов. Снимок экрана и распознанный текст не отправляются.",
             color = Muted, fontSize = 12.sp)
+        Spacer(Modifier.height(10.dp))
+        Text("Сам запрос короткий — сотни токенов. Дорогим его делает ответ: с веб-поиском модель сама решает, сколько раз искать, и каждый поиск тарифицируется отдельно, а найденные страницы целиком попадают в контекст как входные токены. Высокая степень рассуждения добавляет свои токены сверх этого.",
+            color = Muted, fontSize = 12.sp)
+        Spacer(Modifier.height(10.dp))
+        Text("Дешевле всего: без поиска, средняя степень и до 15 записей. Дороже всего: поиск плюс высокая степень на дорогой модели.",
+            color = Muted, fontSize = 11.sp)
     }
 
     Spacer(Modifier.height(20.dp))

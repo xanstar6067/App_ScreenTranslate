@@ -204,14 +204,25 @@ class XaiClient(private val base: String = "https://api.x.ai/v1") : AiEngine {
         val id = optString("id").ifBlank { return null }
         return AiModelInfo(id, optJSONArray("aliases").strings(),
             optJSONArray("input_modalities").strings(), optJSONArray("output_modalities").strings(),
-            optInt("max_prompt_length").takeIf { it > 0 })
+            optInt("max_prompt_length").takeIf { it > 0 },
+            price("prompt_text_token_price"), price("completion_text_token_price"))
     }
+
+    /**
+     * The language-models listing prices tokens in an integer unit of its own: grok-3 comes back as
+     * 30000 / 150000 for its published $3 / $15 per million, so the unit is a ten-thousandth of a
+     * dollar per million tokens. The minimal /models listing carries no prices, and 0 there means
+     * "not stated" rather than "free" — hence the null.
+     */
+    private fun JSONObject.price(field: String): Double? =
+        optDouble(field, 0.0).takeIf { it > 0 }?.div(PRICE_UNITS_PER_DOLLAR)
 
     private fun JSONArray?.strings(): List<String> =
         if (this == null) emptyList() else (0 until length()).mapNotNull { optString(it).ifBlank { null } }
 
     companion object {
         private const val NONE = "none"
+        private const val PRICE_UNITS_PER_DOLLAR = 10_000.0
 
         /**
          * grok-4 and newer answer on the Responses API; older families on chat completions. Read by

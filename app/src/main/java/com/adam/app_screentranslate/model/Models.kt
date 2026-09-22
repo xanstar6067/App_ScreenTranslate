@@ -151,11 +151,18 @@ data class GameContext(val profile: GameProfile, val glossary: List<GlossaryEntr
 fun AppSettings.forGame(profile: GameProfile?): AppSettings =
     if (profile == null || !profile.enabled) this
     else copy(source = profile.source ?: source, target = profile.target ?: target)
-/** One model as the xAI models API describes it. Only what model choice actually needs. */
+/**
+ * One model as a provider's listing describes it. Only what model choice actually needs.
+ *
+ * Prices are US dollars per million tokens, converted from whatever unit the provider publishes,
+ * and null when it publishes none — Gemini's listing carries no prices at all. A price of zero is
+ * a free model and is not the same as an unknown one.
+ */
 data class AiModelInfo(
     val id: String, val aliases: List<String> = emptyList(),
     val inputModalities: List<String> = emptyList(), val outputModalities: List<String> = emptyList(),
-    val maxPromptLength: Int? = null
+    val maxPromptLength: Int? = null,
+    val promptPrice: Double? = null, val completionPrice: Double? = null
 )
 /** One translation the model returned, bound to the recognized blocks it was built from. */
 data class AiFragment(val sourceBlockIds: List<Long>, val correctedSourceText: String, val translatedText: String)

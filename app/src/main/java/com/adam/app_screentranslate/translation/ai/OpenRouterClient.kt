@@ -152,12 +152,21 @@ class OpenRouterClient(private val base: String = "https://openrouter.ai/api/v1"
     private fun JSONObject.asModel(): AiModelInfo? {
         val id = optString("id").ifBlank { return null }
         val architecture = optJSONObject("architecture")
+        val pricing = optJSONObject("pricing")
         return AiModelInfo(id,
             aliases = listOfNotNull(optString("name").ifBlank { null }),
             inputModalities = architecture?.optJSONArray("input_modalities").strings(),
             outputModalities = architecture?.optJSONArray("output_modalities").strings(),
-            maxPromptLength = optInt("context_length").takeIf { it > 0 })
+            maxPromptLength = optInt("context_length").takeIf { it > 0 },
+            promptPrice = pricing.price("prompt"), completionPrice = pricing.price("completion"))
     }
+
+    /**
+     * The catalogue prices tokens one at a time, as decimal strings — "0.000003" is $3 per million —
+     * and a free model says "0". A missing field is a price nobody stated, which is not the same.
+     */
+    private fun JSONObject?.price(field: String): Double? =
+        this?.optString(field)?.ifBlank { null }?.toDoubleOrNull()?.times(1_000_000)
 
     private fun JSONArray?.strings(): List<String> =
         if (this == null) emptyList() else (0 until length()).mapNotNull { optString(it).ifBlank { null } }
@@ -175,8 +184,8 @@ class OpenRouterClient(private val base: String = "https://openrouter.ai/api/v1"
  * vendor's models together, which is the only order that makes hundreds of them readable.
  */
 object OpenRouterModels {
-    private val excluded = listOf("embed", "whisper", "-tts", "tts-", "dall-e", "stable-diffusion",
-        "sdxl", "flux", "imagen", "veo", "sora", "moderation", "rerank")
+    /** Named for the router alone; media and embedding families are common to every provider. */
+    private val excluded = listOf("sdxl", "sd3", "playground-v", "pollinations")
 
     fun textTranslationModels(models: List<AiModelInfo>): List<AiModelInfo> =
         models.filter { isTextTranslationModel(it) }.distinctBy { it.id }.sortedBy { it.id }
@@ -184,11 +193,6 @@ object OpenRouterModels {
     fun isTextTranslationModel(model: AiModelInfo): Boolean {
         val id = model.id.lowercase(Locale.ROOT)
         if (excluded.any { id.contains(it) }) return false
-        // A model that also emits pictures is a generator wearing a text output modality.
-        if (model.outputModalities.any { it.equals("image", true) || it.equals("video", true) }) return false
-        // An empty list means a listing that does not report modalities; those are text models.
-        if (model.outputModalities.isNotEmpty() && !model.outputModalities.any { it.equals("text", true) }) return false
-        if (model.inputModalities.isNotEmpty() && !model.inputModalities.any { it.equals("text", true) }) return false
-        return true
+        return MediaModels.isText(model)
     }
 }
