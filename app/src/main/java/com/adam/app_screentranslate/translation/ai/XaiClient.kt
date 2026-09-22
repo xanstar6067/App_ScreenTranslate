@@ -94,9 +94,12 @@ class XaiClient(private val base: String = "https://api.x.ai/v1") : AiEngine {
      * is reused. The answer is free text; [GameResearch] recovers the JSON from it.
      */
     override suspend fun research(token: String, model: String, system: String, user: String,
-                                  effort: AiEffort, search: Boolean): AiAnswer {
+                                  effort: AiEffort, search: Boolean, limit: Int,
+                                  onProgress: (suspend (AiProgress) -> Unit)?): AiAnswer {
         val remarks = mutableListOf<String>()
         var searching = search
+        var capped = limit > 0
+        var streaming = onProgress != null
         val ladder = AiReasoning.xaiLadder(model, effort)
         var rung = 0
         val endpoints = if (search) listOf(true) else responsesApi[model]?.let { listOf(it) } ?: endpointOrder(model)
@@ -106,18 +109,41 @@ class XaiClient(private val base: String = "https://api.x.ai/v1") : AiEngine {
                 try {
                     val body = if (viaResponses) responsesBody(model, system, user, AiTransport.PLAIN, ladder[rung])
                         else completionBody(model, system, user, AiTransport.PLAIN, ladder[rung])
-                    body.put("temperature", 0.2)
-                    if (searching) body.put("tools", JSONArray().put(JSONObject().put("type", "web_search")))
-                    val raw = http.fetch(request(token, viaResponses, body), patient = true)
+                    body.put("temperature", 0.2).put("stream", streaming)
+                    if (searching) {
+                        val tool = JSONObject().put("type", "web_search")
+                        if (capped) tool.put("max_search_results", limit)
+                        body.put("tools", JSONArray().put(tool))
+                    }
+                    val answer = if (streaming) {
+                        val reader = XaiStreamReader()
+                        http.stream(request(token, viaResponses, body), patient = true) { event ->
+                            reader.event(event)?.let { onProgress!!(it) }
+                        }
+                        reader.answer()
+                    } else AiResearchProtocol.xaiAnswer(http.fetch(request(token, viaResponses, body), patient = true))
                     responsesApi[model] = viaResponses
-                    val answer = AiResearchProtocol.xaiAnswer(raw)
                     remarks += "Рассуждение: " + (ladder[rung] ?: "по умолчанию модели")
-                    if (searching) remarks += "Веб-поиск: источников — ${answer.sources.size}"
+                    if (searching) remarks += "Веб-поиск: источников — ${answer.sources.size}" +
+                        (if (capped) " (ограничение $limit)" else "")
                     return answer.copy(remarks = remarks)
+                } catch (e: AiFormatException) {
+                    // A stream whose shape we do not know yields nothing. Losing the preview is far
+                    // better than losing the answer, so the same request goes again unstreamed.
+                    if (!streaming) throw e
+                    streaming = false
+                    remarks += "Потоковый ответ не распознан — запрос повторён без предпросмотра"
                 } catch (e: AiHttpException) {
                     last = e
                     if (e.status in listOf(401, 403, 429) || e.status !in 400..422) throw e
                     when {
+                        // Each of these is dropped on its own, weakest first: losing the cap or the
+                        // live preview costs nothing, losing the search costs the whole point.
+                        streaming && AiStreaming.refused(e.reason) -> streaming = false
+                        capped && AiStreaming.refusedLimit(e.reason) -> {
+                            capped = false
+                            remarks += "Провайдер не принял ограничение числа источников"
+                        }
                         searching && AiReasoning.refusesSearch(e.reason) -> {
                             searching = false
                             remarks += "Модель отказалась от веб-поиска — ответ по её собственным знаниям"
@@ -148,10 +174,10 @@ class XaiClient(private val base: String = "https://api.x.ai/v1") : AiEngine {
     private fun completionBody(model: String, system: String, user: String, transport: AiTransport,
                                effort: String?): JSONObject {
         val body = JSONObject().put("model", model).put("temperature", 0).put("stream", false)
-        if (effort != null) body.put("reasoning_effort", effort)
             .put("messages", JSONArray()
                 .put(JSONObject().put("role", "system").put("content", system))
                 .put(JSONObject().put("role", "user").put("content", user)))
+        if (effort != null) body.put("reasoning_effort", effort)
         when (transport) {
             AiTransport.SCHEMA -> body.put("response_format", JSONObject().put("type", "json_schema")
                 .put("json_schema", JSONObject().put("name", AiProtocol.SCHEMA_NAME)

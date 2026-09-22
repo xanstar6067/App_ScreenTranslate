@@ -239,15 +239,20 @@ class GameResearchTest {
         val queue = ArrayDeque(replies.toList())
         val calls = mutableListOf<Triple<String, AiEffort, Boolean>>()
         val models = mutableListOf<String>()
+        val systems = mutableListOf<String>()
         override val provider = AiProvider.XAI
         override suspend fun models(token: String) = emptyList<AiModelInfo>()
         override fun usable(models: List<AiModelInfo>) = models
         override fun describe(model: String) = emptyList<String>()
         override suspend fun translate(token: String, model: String, system: String, user: String, effort: AiEffort) = ""
+        val limits = mutableListOf<Int>()
         override suspend fun research(token: String, model: String, system: String, user: String,
-                                      effort: AiEffort, search: Boolean): AiAnswer {
+                                      effort: AiEffort, search: Boolean, limit: Int,
+                                      onProgress: (suspend (AiProgress) -> Unit)?): AiAnswer {
             calls += Triple(user, effort, search)
             models += model
+            limits += limit
+            systems += system
             return queue.removeFirst()
         }
     }
@@ -256,6 +261,45 @@ class GameResearchTest {
     private val settings = AiSettings(model = "gemini-flash-latest", provider = AiProvider.GEMINI,
         researchProvider = AiProvider.XAI, researchModel = "grok-4.5",
         researchEffort = AiEffort.HIGH, researchSearch = true)
+
+    /**
+     * The bug this guards: asked for locations and factions only, the model returned characters
+     * relabelled as locations. It read wanted_kinds as a target to fill, helped along by an example
+     * that always showed a character.
+     */
+    @Test fun anExcludedKindIsNamedAndNeverShownAsAnExample() {
+        val prompt = GameResearch.system(search = false, kinds = setOf(TermKind.LOCATION, TermKind.FACTION))
+        assertTrue(prompt, prompt.contains("wants only these kinds: faction, location"))
+        // Both lists keep the declaration order of TermKind, not the order they were picked in.
+        assertTrue(prompt, prompt.contains("Do NOT return term, character"))
+        assertTrue(prompt, prompt.contains("Never relabel"))
+        // The example must not hand the model a kind it was just told not to return.
+        assertTrue(prompt, prompt.contains("\"kind\": \"faction\""))
+        assertFalse(prompt, prompt.contains("\"kind\": \"character\""))
+        assertFalse(prompt, prompt.contains("\"gender\": \"female\""))
+    }
+
+    @Test fun withEveryKindWantedThereIsNothingToForbid() {
+        val prompt = GameResearch.system(search = true)
+        assertFalse(prompt, prompt.contains("Do NOT return"))
+        assertTrue(prompt, prompt.contains("\"gender\": \"female\""))
+    }
+
+    @Test fun thePayloadNamesTheExcludedKindsToo() {
+        val root = JSONObject(GameResearch.payload(request(kinds = setOf(TermKind.LOCATION))))
+        assertEquals(listOf("location"), root.getJSONArray("wanted_kinds").let { a ->
+            (0 until a.length()).map { a.getString(it) } })
+        assertEquals(listOf("term", "character", "faction"), root.getJSONArray("excluded_kinds").let { a ->
+            (0 until a.length()).map { a.getString(it) } })
+    }
+
+    @Test fun researcherPutsTheChosenKindsInThePromptAndTheCapInTheRequest() = runBlocking {
+        val engine = ScriptedEngine(AiAnswer(answer(term("Eden", "\u042d\u0434\u0435\u043d"))))
+        val kinds = setOf(TermKind.LOCATION)
+        GameResearcher(engine).research(request(kinds = kinds), settings.copy(researchSearchLimit = 5), "token")
+        assertTrue(engine.systems.single().contains("Do NOT return"))
+        assertEquals(listOf(5), engine.limits)
+    }
 
     @Test fun researcherPassesSettingsAndSources() = runBlocking {
         val engine = ScriptedEngine(AiAnswer(answer(term("Rapi", "Рапи")),

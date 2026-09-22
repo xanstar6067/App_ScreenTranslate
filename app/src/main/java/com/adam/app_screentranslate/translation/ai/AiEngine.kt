@@ -6,7 +6,12 @@ import com.adam.app_screentranslate.model.AiProvider
 import com.adam.app_screentranslate.model.Box
 import com.adam.app_screentranslate.model.ScreenTextBlock
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.job
 import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.coroutines.withContext
 import okhttp3.*
 import org.json.JSONObject
 import java.io.IOException
@@ -39,9 +44,17 @@ interface AiEngine {
      * A free-form request with the provider's own web search when [search] is set. Used to fill a
      * game profile, where a slow careful answer is worth waiting for. A model that refuses search
      * or the reasoning level is asked again without it, and the answer says so in its remarks.
+     *
+     * [limit] caps the pages the provider's search may use; 0 leaves that to the provider. Not
+     * every provider accepts a cap, and one that refuses it is asked again without it rather than
+     * without search.
+     *
+     * [onProgress] is called as the answer arrives, so a request that runs for minutes can be
+     * watched. The request streams only when a caller asks for progress.
      */
     suspend fun research(token: String, model: String, system: String, user: String,
-                         effort: AiEffort, search: Boolean): AiAnswer
+                         effort: AiEffort, search: Boolean, limit: Int = 0,
+                         onProgress: (suspend (AiProgress) -> Unit)? = null): AiAnswer
     /** Keeps only models that can translate text — no image, video, audio or embedding models. */
     fun usable(models: List<AiModelInfo>): List<AiModelInfo>
     /** What the last successful call to [model] negotiated, for the connection report. */
@@ -67,6 +80,41 @@ internal class AiHttp {
     /** Research searches the web and may think at length before the first byte of the answer. */
     private val patientClient = client.newBuilder()
         .readTimeout(300, TimeUnit.SECONDS).callTimeout(360, TimeUnit.SECONDS).build()
+
+    /**
+     * Server-sent events, one payload at a time. The call is made synchronously because the caller
+     * is already off the main thread and the body has to be read as it arrives; cancelling the
+     * coroutine cancels the call, which is what unblocks that read.
+     *
+     * Comment lines are keep-alives — OpenRouter sends them for minutes while a model thinks — and
+     * are dropped here so that no reader has to know about them.
+     */
+    suspend fun stream(request: Request, patient: Boolean = false, onEvent: suspend (String) -> Unit) {
+        val call = (if (patient) patientClient else client).newCall(request)
+        val cancellation = currentCoroutineContext().job.invokeOnCompletion { if (it != null) call.cancel() }
+        try {
+            val response = withContext(Dispatchers.IO) { call.execute() }
+            response.use {
+                val body = it.body ?: throw AiHttpException(it.code, "Пустой ответ сервера.")
+                if (!it.isSuccessful) throw AiHttpException(it.code, describe(it.code, body.string()))
+                val source = body.source()
+                while (true) {
+                    currentCoroutineContext().ensureActive()
+                    val line = source.readUtf8Line() ?: break
+                    if (line.isBlank() || line.startsWith(":")) continue
+                    if (!line.startsWith("data:")) continue
+                    val payload = line.removePrefix("data:").trim()
+                    if (payload == DONE) break
+                    onEvent(payload)
+                }
+            }
+        } catch (e: IOException) {
+            // Cancelling the coroutine cancels the call, which fails the read. The cancellation is
+            // the real reason, and the caller must see it as one rather than as a dead network.
+            currentCoroutineContext().ensureActive()
+            throw e
+        } finally { cancellation.dispose() }
+    }
 
     suspend fun fetch(request: Request, patient: Boolean = false): String = suspendCancellableCoroutine { continuation ->
         val call = (if (patient) patientClient else client).newCall(request)
@@ -94,6 +142,8 @@ internal class AiHttp {
      * The server message is the only thing that explains a 400, so it is shown. It can echo the
      * request, which is why it reaches the screen and never a log — see invariant 15.
      */
+    private companion object { const val DONE = "[DONE]" }
+
     private fun describe(status: Int, body: String): String {
         val server = runCatching {
             val root = JSONObject(body)

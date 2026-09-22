@@ -63,8 +63,21 @@ object GameResearch {
     const val MAX_TERM = 80
     const val MAX_NOTES = 1500
     val LIMITS = listOf(15, 30, 60)
+    /** Pages the provider's search may read, when the user chooses to cap it at all. */
+    val SOURCE_LIMITS = listOf(3, 5, 10)
 
-    fun system(search: Boolean): String = """
+    /**
+     * [kinds] is in the prompt, not only in the payload, and the example below is written with a
+     * kind the user actually asked for. A model told "only include wanted_kinds" while being shown
+     * an example of a character will happily return characters relabelled as locations: it treats
+     * the list as a target to fill rather than as a filter. Saying it twice, negatively, and never
+     * showing an excluded kind is what stops that.
+     */
+    fun system(search: Boolean, kinds: Set<TermKind> = TermKind.entries.toSet()): String {
+        val wanted = TermKind.entries.filter { it in kinds }.ifEmpty { TermKind.entries }
+        val excluded = TermKind.entries.filter { it !in wanted }
+        val sample = wanted.first()
+        return """
         You are a video game localization researcher. For one game you build a reference that a
         translator uses while translating the game's screens: a short brief and a glossary of the
         game's own names and terms.
@@ -85,15 +98,23 @@ object GameResearch {
           otherwise your own careful suggestion (basis "suggested").
         - Names that the official localization keeps as they are — titles, brands, names written in
           Latin letters — get keep: true and a translation equal to the term.
-        - kind is one of: character, faction, location, term. "term" covers items, abilities,
-          currencies, game mechanics and interface words specific to this game.
+        - "kind" is what the entry truly is: character (a person), faction (an organisation or
+          group), location (a place), term (everything else: items, abilities, currencies, game
+          mechanics and interface words specific to this game). Always label an entry with its
+          true kind.
+        - This request wants only these kinds: ${wanted.joinToString { it.wire }}.${
+            if (excluded.isEmpty()) "" else """
+        - Do NOT return ${excluded.joinToString { it.wire }} at all. wanted_kinds is a filter, not a
+          target to fill: when an entry's true kind is not wanted, leave the entry out entirely.
+          Never relabel it to make it fit — a person is a character even if characters were not
+          asked for, and must then simply be omitted. Returning fewer entries is correct."""}
         - for a character, set "gender" to their own sex or grammatical gender in the target
           language: male, female, neuter or plural. Omit it, or use unknown, when the game never
           makes it clear. Never set gender for a faction, location or term.
         - Choose what a player actually reads on screen often. Skip generic words any dictionary
           translates correctly ("Settings", "Attack", "Level").
-        - Never repeat an entry of known_terms. Only include kinds listed in wanted_kinds, and at
-          most max_terms entries, the most frequent first.
+        - Never repeat an entry of known_terms, and return at most max_terms entries, the most
+          frequent first.
         - "comment" is at most one short sentence in the target language: who or what it is.
         - When write_notes is true, "notes" is a brief for the translator in the target language,
           under 800 characters: genre and setting in one line; tone and register of the dialogue;
@@ -104,9 +125,11 @@ object GameResearch {
 
         Answer with one JSON object and nothing else — no markdown, no citation marks inside strings:
         {"game_found": true, "official_title": "...", "notes": "...",
-         "terms": [{"term": "...", "translation": "...", "kind": "character", "gender": "female",
+         "terms": [{"term": "...", "translation": "...", "kind": "${sample.wire}",${
+            if (TermKind.CHARACTER in wanted) " \"gender\": \"female\"," else ""}
                     "keep": false, "basis": "official", "comment": "..."}]}
     """.trimIndent()
+    }
 
     /** Everything about the game that leaves the device, in one place. No screen text, ever. */
     fun payload(request: ResearchRequest): String {
@@ -116,6 +139,7 @@ object GameResearch {
         val root = JSONObject().put("game", game)
             .put("source_language", request.source).put("target_language", request.target)
             .put("wanted_kinds", JSONArray(TermKind.entries.filter { it in request.kinds }.map { it.wire }))
+            .put("excluded_kinds", JSONArray(TermKind.entries.filter { it !in request.kinds }.map { it.wire }))
             .put("max_terms", request.limit).put("write_notes", request.notes)
         profile.notes.trim().takeIf { it.isNotEmpty() }?.let { root.put("player_notes", it) }
         request.focus.trim().takeIf { it.isNotEmpty() }?.let { root.put("focus", it) }
@@ -201,20 +225,22 @@ object GameResearch {
  * reasoning, which costs seconds rather than minutes.
  */
 class GameResearcher(private val engine: AiEngine) {
-    suspend fun research(request: ResearchRequest, ai: AiSettings, token: String): ResearchResult {
+    suspend fun research(request: ResearchRequest, ai: AiSettings, token: String,
+                         onProgress: (suspend (AiProgress) -> Unit)? = null): ResearchResult {
         if (token.isBlank()) throw AiHttpException(0, "Не указан API-ключ ${ai.researchProvider.label}.")
         if (ai.researchModel.isBlank()) throw AiHttpException(0, "Не выбрана модель ${ai.researchProvider.label}.")
-        val system = GameResearch.system(ai.researchSearch)
+        val system = GameResearch.system(ai.researchSearch, request.kinds)
         val first = engine.research(token, ai.researchModel, system, GameResearch.payload(request),
-            ai.researchEffort, ai.researchSearch)
+            ai.researchEffort, ai.researchSearch, ai.researchSearchLimit, onProgress)
         val (result, answers) = try { GameResearch.parse(first.text, request) to listOf(first) }
         catch (e: AiFormatException) {
             val repair = "Your previous answer was rejected: ${e.reason}\n" +
                 "Rewrite it as the JSON object the instructions describe, keeping its content. " +
                 "Wanted kinds: ${request.kinds.joinToString { it.wire }}; at most ${request.limit} terms.\n\n" +
                 "Previous answer:\n${first.text.take(20_000)}"
-            val second = engine.research(token, ai.researchModel, GameResearch.system(search = false), repair,
-                AiEffort.MINIMAL, search = false)
+            val second = engine.research(token, ai.researchModel,
+                GameResearch.system(search = false, kinds = request.kinds), repair, AiEffort.MINIMAL,
+                search = false, limit = 0, onProgress = onProgress)
             GameResearch.parse(second.text, request) to listOf(first, second)
         }
         return result.copy(sources = answers.flatMap { it.sources }.distinctBy { it.url },

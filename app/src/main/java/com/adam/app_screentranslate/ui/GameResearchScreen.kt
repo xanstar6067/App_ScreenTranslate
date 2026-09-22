@@ -14,6 +14,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalUriHandler
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -174,6 +175,32 @@ private fun ResearchSetup(panel: GamesPanel, game: GameProfile, app: AppSettings
         }, color = Muted, fontSize = 11.sp)
 
         Spacer(Modifier.height(16.dp))
+        if (ai.researchSearch) {
+            Spacer(Modifier.height(16.dp))
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    Text("Ограничить число источников", fontWeight = FontWeight.Medium, fontSize = 14.sp)
+                    Text("Без ограничения модель сама решает, сколько страниц прочитать", color = Muted, fontSize = 11.sp)
+                }
+                Switch(checked = ai.researchSearchLimit > 0, onCheckedChange = {
+                    panel.updateAi(ai.copy(researchSearchLimit = if (it) GameResearch.SOURCE_LIMITS[1] else 0))
+                })
+            }
+            if (ai.researchSearchLimit > 0) {
+                Spacer(Modifier.height(10.dp))
+                Options(GameResearch.SOURCE_LIMITS, ai.researchSearchLimit, { "до $it" }) {
+                    panel.updateAi(ai.copy(researchSearchLimit = it))
+                }
+            }
+            Spacer(Modifier.height(6.dp))
+            Text(when (provider) {
+                AiProvider.OPENROUTER -> "OpenRouter передаёт ограничение поиску напрямую."
+                AiProvider.XAI -> "xAI принимает ограничение не у всех моделей: при отказе запрос уйдёт без него, и это будет в отчёте."
+                AiProvider.GEMINI -> "Поиск Google ограничение не принимает — здесь оно ни на что не повлияет."
+            }, color = Muted, fontSize = 11.sp)
+        }
+
+        Spacer(Modifier.height(16.dp))
         Text("Степень рассуждения", fontWeight = FontWeight.Medium, fontSize = 14.sp)
         Spacer(Modifier.height(8.dp))
         EffortPicker(provider, ai.researchModel, ai.researchEffort) { panel.updateAi(ai.copy(researchEffort = it)) }
@@ -237,16 +264,34 @@ private fun ResearchRunning(panel: GamesPanel, state: ResearchState.Running) {
     Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(22.dp)).background(Hero).padding(22.dp)) {
         Text("✦ РАБОТАЕТ", color = Mint, fontSize = 10.sp, letterSpacing = 1.4.sp, fontWeight = FontWeight.Bold)
         Spacer(Modifier.height(10.dp))
-        Text(String.format(java.util.Locale.ROOT, "%d:%02d", seconds / 60, seconds % 60), fontSize = 40.sp, fontWeight = FontWeight.Bold, color = Color.White)
+        Row(verticalAlignment = Alignment.Bottom) {
+            Text(String.format(java.util.Locale.ROOT, "%d:%02d", seconds / 60, seconds % 60),
+                fontSize = 40.sp, fontWeight = FontWeight.Bold, color = Color.White)
+            state.note?.let {
+                Spacer(Modifier.width(12.dp))
+                Text(it, color = Mint, fontSize = 12.sp, modifier = Modifier.padding(bottom = 8.dp))
+            }
+        }
         Spacer(Modifier.height(14.dp))
         LinearProgressIndicator(Modifier.fillMaxWidth(), color = Mint, trackColor = Ink.copy(alpha = .4f))
         Spacer(Modifier.height(16.dp))
-        if (state.search) Step("Ищет игру, её вики и официальную локализацию")
-        Step("Отбирает имена и термины, которые чаще встречаются на экране")
-        Step("Сверяет переводы и пишет заметки для переводчика")
-        Spacer(Modifier.height(10.dp))
-        Text(if (state.search) "С поиском и высокой степенью рассуждения это может занять пару минут."
-            else "Обычно это меньше минуты.", color = Color(0xFFC9DDD6), fontSize = 11.sp)
+        // Until the first token arrives there is nothing to show but the plan; after that the
+        // model's own words are the proof that it is working.
+        if (state.preview.isEmpty()) {
+            if (state.search) Step("Ищет игру, её вики и официальную локализацию")
+            Step("Отбирает имена и термины, которые чаще встречаются на экране")
+            Step("Сверяет переводы и пишет заметки для переводчика")
+            Spacer(Modifier.height(10.dp))
+            Text(if (state.search) "С поиском и высокой степенью рассуждения это может занять пару минут."
+                else "Обычно это меньше минуты.", color = Color(0xFFC9DDD6), fontSize = 11.sp)
+        } else {
+            Text(state.preview, color = Color(0xFFC9DDD6), fontSize = 11.sp, lineHeight = 15.sp,
+                fontFamily = FontFamily.Monospace, maxLines = 8, overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp))
+                    .background(Ink.copy(alpha = .45f)).padding(10.dp))
+            Spacer(Modifier.height(8.dp))
+            Text("Получено символов: ${state.chars}", color = Color(0xFFC9DDD6), fontSize = 11.sp)
+        }
     }
     Spacer(Modifier.height(14.dp))
     OutlinedButton(onClick = { panel.cancelResearch() }, modifier = Modifier.fillMaxWidth()) {

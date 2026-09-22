@@ -85,22 +85,38 @@ class GeminiClient(private val base: String = "https://generativelanguage.google
      * research asks for plain text and [GameResearch] recovers the object from it.
      */
     override suspend fun research(token: String, model: String, system: String, user: String,
-                                  effort: AiEffort, search: Boolean): AiAnswer {
+                                  effort: AiEffort, search: Boolean, limit: Int,
+                                  onProgress: (suspend (AiProgress) -> Unit)?): AiAnswer {
         val remarks = mutableListOf<String>()
         var searching = search
+        var streaming = onProgress != null
         val ladder = AiReasoning.geminiLadder(model, effort)
         var rung = 0
+        // Grounding with Google Search takes no cap on the pages it reads; saying so is better
+        // than sending a field that would only be rejected.
+        if (limit > 0 && search) remarks += "Ограничение числа источников Gemini не поддерживает"
         while (true) {
             try {
-                val raw = http.fetch(build(token, model, system, user, AiTransport.PLAIN, ladder[rung],
-                    searching, temperature = 0.2), patient = true)
-                val answer = AiResearchProtocol.geminiAnswer(raw)
+                val request = build(token, model, system, user, AiTransport.PLAIN, ladder[rung],
+                    searching, temperature = 0.2, stream = streaming)
+                val answer = if (streaming) {
+                    val reader = GeminiStreamReader()
+                    http.stream(request, patient = true) { event -> reader.event(event)?.let { onProgress!!(it) } }
+                    reader.answer()
+                } else AiResearchProtocol.geminiAnswer(http.fetch(request, patient = true))
                 remarks += "Размышления: " + AiReasoning.describe(ladder[rung])
                 if (searching) remarks += "Поиск Google: источников — ${answer.sources.size}"
                 return answer.copy(remarks = remarks)
+            } catch (e: AiFormatException) {
+                // A stream whose shape we do not know yields nothing. Losing the preview is far
+                // better than losing the answer, so the same request goes again unstreamed.
+                if (!streaming) throw e
+                streaming = false
+                remarks += "Потоковый ответ не распознан — запрос повторён без предпросмотра"
             } catch (e: AiHttpException) {
                 if (e.status !in 400..422) throw e
                 when {
+                    streaming && AiStreaming.refused(e.reason) -> streaming = false
                     searching && AiReasoning.refusesSearch(e.reason) -> {
                         searching = false
                         remarks += "Модель отказалась от поиска Google — ответ по её собственным знаниям"
@@ -113,7 +129,8 @@ class GeminiClient(private val base: String = "https://generativelanguage.google
     }
 
     private fun build(token: String, model: String, system: String, user: String, transport: AiTransport,
-                      thinks: GeminiThinking?, search: Boolean, temperature: Double): Request {
+                      thinks: GeminiThinking?, search: Boolean, temperature: Double,
+                      stream: Boolean = false): Request {
         val generation = JSONObject().put("temperature", temperature)
         when (transport) {
             AiTransport.SCHEMA -> generation.put("responseMimeType", "application/json")
@@ -131,7 +148,10 @@ class GeminiClient(private val base: String = "https://generativelanguage.google
                 .put("parts", JSONArray().put(JSONObject().put("text", user)))))
             .put("generationConfig", generation)
         if (search) body.put("tools", JSONArray().put(JSONObject().put("google_search", JSONObject())))
-        return Request.Builder().url("$base/models/$model:generateContent").header(KEY, token)
+        // Streaming is a different method on the same endpoint, and asks for SSE rather than the
+        // chunked JSON array that would otherwise come back.
+        val method = if (stream) "streamGenerateContent?alt=sse" else "generateContent"
+        return Request.Builder().url("$base/models/$model:$method").header(KEY, token)
             .post(body.toString().toRequestBody(json)).build()
     }
 

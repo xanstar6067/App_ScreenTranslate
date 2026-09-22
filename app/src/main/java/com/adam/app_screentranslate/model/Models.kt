@@ -101,7 +101,12 @@ data class AiSettings(
     val effort: AiEffort = AiEffort.MINIMAL,
     /** Reasoning and web search for filling a game profile, where care matters more than speed. */
     val researchEffort: AiEffort = AiEffort.MEDIUM,
-    val researchSearch: Boolean = true
+    val researchSearch: Boolean = true,
+    /**
+     * How many pages the provider's search may use. 0 leaves it to the provider, which is the
+     * default: a hidden cap that quietly makes answers worse is not something to ship unasked.
+     */
+    val researchSearchLimit: Int = 0
 )
 /** The two roles read and written by one name, so nothing has to branch on the role twice. */
 fun AiSettings.providerFor(role: AiRole) = if (role == AiRole.RESEARCH) researchProvider else provider

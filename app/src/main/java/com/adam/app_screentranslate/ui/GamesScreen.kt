@@ -22,6 +22,7 @@ import com.adam.app_screentranslate.model.*
 import com.adam.app_screentranslate.translation.ai.AiEngine
 import com.adam.app_screentranslate.translation.ai.AiFormatException
 import com.adam.app_screentranslate.translation.ai.AiHttpException
+import com.adam.app_screentranslate.translation.ai.AiProgress
 import com.adam.app_screentranslate.translation.ai.AiPrompts
 import com.adam.app_screentranslate.translation.ai.AiTranslator
 import com.adam.app_screentranslate.translation.ai.GameResearch
@@ -44,7 +45,9 @@ internal val Warn = Color(0xFFFFD39B)
 /** The AI fill of one game's profile. It belongs to the panel, so leaving the tab does not lose it. */
 sealed interface ResearchState {
     val pkg: String
-    data class Running(override val pkg: String, val started: Long, val search: Boolean) : ResearchState
+    /** [preview] is the tail of what the model has written; [chars] is how much it has written. */
+    data class Running(override val pkg: String, val started: Long, val search: Boolean,
+                       val preview: String = "", val chars: Int = 0, val note: String? = null) : ResearchState
     data class Failed(override val pkg: String, val message: String) : ResearchState
     data class Done(override val pkg: String, val result: ResearchResult, val proposals: List<ResearchProposal>) : ResearchState
 }
@@ -105,6 +108,23 @@ class GamesPanel(private val store: GameStore, private val context: Context, pri
         val settings = ai.settings.value
         research = ResearchState.Running(game.packageName, System.currentTimeMillis(), settings.researchSearch)
         researchJob = scope.launch {
+            // The answer arrives token by token over minutes; repainting on each one would cost
+            // more than the request. A tick and a change of stage are enough to look alive.
+            var shownAt = 0L
+            var shownNote: String? = null
+            val onProgress: suspend (AiProgress) -> Unit = { update ->
+                val now = System.currentTimeMillis()
+                if (now - shownAt >= PREVIEW_MILLIS || update.note != shownNote) {
+                    shownAt = now
+                    shownNote = update.note
+                    withContext(Dispatchers.Main.immediate) {
+                        val current = research
+                        if (current is ResearchState.Running && current.pkg == game.packageName)
+                            research = current.copy(preview = update.text.takeLast(PREVIEW_CHARS),
+                                chars = update.text.length, note = update.note)
+                    }
+                }
+            }
             research = try {
                 val known = store.glossary(game.packageName)
                 val languages = app.forGame(game)
@@ -114,7 +134,7 @@ class GamesPanel(private val store: GameStore, private val context: Context, pri
                     kinds, notes, limit, focus)
                 val result = withContext(Dispatchers.IO) {
                     GameResearcher(engine(settings.researchProvider))
-                        .research(request, settings, ai.token(settings.researchProvider))
+                        .research(request, settings, ai.token(settings.researchProvider), onProgress)
                 }
                 ResearchState.Done(game.packageName, result, GameResearch.compare(result.terms, known))
             } catch (e: CancellationException) { research = null; throw e }
@@ -127,6 +147,12 @@ class GamesPanel(private val store: GameStore, private val context: Context, pri
     }
 
     fun cancelResearch() { researchJob?.cancel(); research = null }
+
+    private companion object {
+        const val PREVIEW_MILLIS = 150L
+        /** Only the tail is kept: the page shows the last few lines, not the whole answer. */
+        const val PREVIEW_CHARS = 700
+    }
 
     fun dismissResearch() { if (researchJob?.isActive != true) research = null }
 

@@ -82,22 +82,38 @@ class OpenRouterClient(private val base: String = "https://openrouter.ai/api/v1"
      * here than a guaranteed shape.
      */
     override suspend fun research(token: String, model: String, system: String, user: String,
-                                  effort: AiEffort, search: Boolean): AiAnswer {
+                                  effort: AiEffort, search: Boolean, limit: Int,
+                                  onProgress: (suspend (AiProgress) -> Unit)?): AiAnswer {
         val remarks = mutableListOf<String>()
         var searching = search
+        var streaming = onProgress != null
         val ladder = AiReasoning.routerLadder(model, effort)
         var rung = 0
         while (true) {
             try {
-                val raw = http.fetch(request(token, body(model, system, user, AiTransport.PLAIN, ladder[rung],
-                    searching, temperature = 0.2)), patient = true)
-                val answer = AiResearchProtocol.routerAnswer(guard(raw))
+                val body = body(model, system, user, AiTransport.PLAIN, ladder[rung], searching,
+                    temperature = 0.2, limit = limit, stream = streaming)
+                val answer = if (streaming) {
+                    val reader = RouterStreamReader()
+                    http.stream(request(token, body), patient = true) { event ->
+                        reader.event(event)?.let { onProgress!!(it) }
+                    }
+                    reader.answer()
+                } else AiResearchProtocol.routerAnswer(guard(http.fetch(request(token, body), patient = true)))
                 remarks += "Рассуждение: " + AiReasoning.describe(ladder[rung])
-                if (searching) remarks += "Веб-поиск: источников — ${answer.sources.size}"
+                if (searching) remarks += "Веб-поиск: источников — ${answer.sources.size}" +
+                    (if (limit > 0) " (ограничение $limit)" else "")
                 return answer.copy(remarks = remarks)
+            } catch (e: AiFormatException) {
+                // A stream whose shape we do not know yields nothing. Losing the preview is far
+                // better than losing the answer, so the same request goes again unstreamed.
+                if (!streaming) throw e
+                streaming = false
+                remarks += "Потоковый ответ не распознан — запрос повторён без предпросмотра"
             } catch (e: AiHttpException) {
                 if (e.status !in 400..422) throw e
                 when {
+                    streaming && AiStreaming.refused(e.reason) -> streaming = false
                     searching && AiReasoning.refusesSearch(e.reason) -> {
                         searching = false
                         remarks += "Модель отказалась от веб-поиска — ответ по её собственным знаниям"
@@ -113,8 +129,9 @@ class OpenRouterClient(private val base: String = "https://openrouter.ai/api/v1"
         .header(AUTH, "Bearer $token").post(body.toString().toRequestBody(json)).build()
 
     private fun body(model: String, system: String, user: String, transport: AiTransport,
-                     reasoning: RouterReasoning?, search: Boolean, temperature: Double): JSONObject {
-        val body = JSONObject().put("model", model).put("stream", false).put("temperature", temperature)
+                     reasoning: RouterReasoning?, search: Boolean, temperature: Double,
+                     limit: Int = 0, stream: Boolean = false): JSONObject {
+        val body = JSONObject().put("model", model).put("stream", stream).put("temperature", temperature)
             .put("messages", JSONArray()
                 .put(JSONObject().put("role", "system").put("content", system))
                 .put(JSONObject().put("role", "user").put("content", user)))
@@ -131,7 +148,9 @@ class OpenRouterClient(private val base: String = "https://openrouter.ai/api/v1"
             AiTransport.OBJECT -> body.put("response_format", JSONObject().put("type", "json_object"))
             AiTransport.PLAIN -> Unit
         }
-        if (search) body.put("plugins", JSONArray().put(JSONObject().put("id", "web").put("max_results", WEB_RESULTS)))
+        // No hidden cap: the router's own default applies unless the user set a limit.
+        if (search) body.put("plugins", JSONArray().put(JSONObject().put("id", "web")
+            .apply { if (limit > 0) put("max_results", limit) }))
         return body
     }
 
@@ -171,10 +190,7 @@ class OpenRouterClient(private val base: String = "https://openrouter.ai/api/v1"
     private fun JSONArray?.strings(): List<String> =
         if (this == null) emptyList() else (0 until length()).mapNotNull { optString(it).ifBlank { null } }
 
-    private companion object {
-        const val AUTH = "Authorization"
-        const val WEB_RESULTS = 5
-    }
+    private companion object { const val AUTH = "Authorization" }
 }
 
 /**

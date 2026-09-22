@@ -47,7 +47,8 @@ class AiConfigManager(context: Context) {
             .putBoolean("repair", value.repair).putString("prompt", value.prompt)
             .putBoolean("context", value.context).putString("effort", value.effort.name)
             .putString("research.effort", value.researchEffort.name)
-            .putBoolean("research.search", value.researchSearch).apply()
+            .putBoolean("research.search", value.researchSearch)
+            .putInt("research.search.limit", value.researchSearchLimit).apply()
         mutable.value = choice.settings
     }
 
@@ -108,7 +109,8 @@ class AiConfigManager(context: Context) {
             context = prefs.getBoolean("context", true),
             effort = effort(prefs.getString("effort", null), AiEffort.MINIMAL),
             researchEffort = effort(prefs.getString("research.effort", null), AiEffort.MEDIUM),
-            researchSearch = prefs.getBoolean("research.search", true))
+            researchSearch = prefs.getBoolean("research.search", true),
+            researchSearchLimit = prefs.getInt("research.search.limit", 0))
     }
 
     private fun provider(key: String) =
