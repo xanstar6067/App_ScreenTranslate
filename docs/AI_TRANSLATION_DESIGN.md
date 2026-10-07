@@ -78,7 +78,9 @@ Function calling (`tools`) намеренно **не используется**:
 равно надо разбирать, — лишний слой без дополнительной гарантии. Он остаётся планом Б, если
 появится модель со `strict` только на инструментах.
 
-`temperature = 0` на обоих API.
+`temperature = 0` у xAI и у Gemini до 3.x. Gemini 3 и новее `temperature`, `topP`, `topK` не получают:
+с Gemini 3.6 выборка фиксирована, а Google объявил, что следующие модели отвечают на эти поля 400.
+Если модель всё же отвергает `temperature`, запрос повторяется без неё.
 
 **Глубина рассуждений — критичный параметр, а не тонкая настройка.** Все текущие текстовые модели
 xAI относятся к семейству grok-4 и являются reasoning-моделями, а `reasoning.effort` по умолчанию
@@ -111,7 +113,7 @@ xAI относятся к семейству grok-4 и являются reasonin
 | Эндпоинт | `/responses` или `/chat/completions` | `POST /v1beta/models/{model}:generateContent` |
 | Авторизация | `Authorization: Bearer` | `x-goog-api-key` (заголовок, **не** query-параметр) |
 | Схема | JSON Schema, `strict: true` | OpenAPI-подмножество: типы заглавными, **без** `additionalProperties` |
-| Управление «думанием» | `reasoning.effort: low` | `thinkingConfig.thinkingBudget: 0` |
+| Управление «думанием» | `reasoning.effort: low` | `thinkingConfig.thinkingLevel` (у 2.5 — `thinkingBudget` запасной ступенью) |
 | Конверт ответа | `output[]` / `choices[]` | `candidates[0].content.parts[]` |
 
 Ключ Gemini принципиально идёт заголовком: официальная документация допускает `?key=`, но URL
@@ -385,8 +387,10 @@ activity, так что нажатие кнопки перевода ответ 
 
 **Степень рассуждения.** Нейтральная шкала `AiEffort` (мин./низкая/средняя/высокая) переводится
 клиентом в то, что понимает модель: `reasoning.effort` (`/responses`) или `reasoning_effort`
-(`/chat/completions`) у xAI; `thinkingLevel` у Gemini 3.x, `thinkingBudget` у 2.5 (Pro не отключает
-размышления — минимум 128 токенов). Каждый уровень — лестница (`AiReasoning.*Ladder`): при отказе
+(`/chat/completions`) у xAI; `thinkingLevel` у Gemini; Gemini 3 и новее `thinkingBudget` не получают никогда — Google перестал
+переводить его в уровень, и новые модели отвечают 400. У 2.5 бюджет остался запасной ступенью после
+уровня, а «Мин.» начинается с бюджета 0 — только он отключает размышления 2.5 Flash (Pro его
+отвергает и переходит к уровню low). Каждый уровень — лестница (`AiReasoning.*Ladder`): при отказе
 4xx, где упомянуты reasoning/effort/thinking/budget, клиент берёт следующую ступень; последняя
 ступень не передаёт параметр вовсе. Принятая ступень запоминается на сессию. Интерфейс показывает
 только уровни, известные для выбранной модели, и честно пишет, если настраивать нечего.

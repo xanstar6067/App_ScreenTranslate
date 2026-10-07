@@ -61,15 +61,17 @@ class GeminiClient(private val base: String = "https://generativelanguage.google
         val ladder = AiReasoning.geminiLadder(model, effort)
         val remembered = "$model|${effort.name}"
         var rung = thinking[remembered] ?: 0
+        var temperature = if (AiReasoning.geminiSampling(model)) 0.0 else null
         while (true) {
             try {
-                val raw = http.fetch(build(token, model, system, user, transport, ladder[rung], search = false, temperature = 0.0))
+                val raw = http.fetch(build(token, model, system, user, transport, ladder[rung], search = false, temperature))
                 transports[model] = transport
                 thinking[remembered] = rung
                 return AiProtocol.geminiContent(raw)
             } catch (e: AiHttpException) {
                 if (e.status !in 400..422) throw e
                 when {
+                    temperature != null && AiReasoning.refusesSampling(e.reason) -> temperature = null
                     // Pro models refuse a zero budget, some refuse a level, pre-2.5 know no thinking.
                     ladder[rung] != null && AiReasoning.refusesReasoning(e.reason) && rung < ladder.lastIndex -> rung++
                     transport == AiTransport.SCHEMA -> transport = AiTransport.OBJECT
@@ -92,13 +94,14 @@ class GeminiClient(private val base: String = "https://generativelanguage.google
         var streaming = onProgress != null
         val ladder = AiReasoning.geminiLadder(model, effort)
         var rung = 0
+        var temperature = if (AiReasoning.geminiSampling(model)) 0.2 else null
         // Grounding with Google Search takes no cap on the pages it reads; saying so is better
         // than sending a field that would only be rejected.
         if (limit > 0 && search) remarks += "Ограничение числа источников Gemini не поддерживает"
         while (true) {
             try {
                 val request = build(token, model, system, user, AiTransport.PLAIN, ladder[rung],
-                    searching, temperature = 0.2, stream = streaming)
+                    searching, temperature, stream = streaming)
                 val answer = if (streaming) {
                     val reader = GeminiStreamReader()
                     http.stream(request, patient = true) { event -> reader.event(event)?.let { onProgress!!(it) } }
@@ -117,6 +120,7 @@ class GeminiClient(private val base: String = "https://generativelanguage.google
                 if (e.status !in 400..422) throw e
                 when {
                     streaming && AiStreaming.refused(e.reason) -> streaming = false
+                    temperature != null && AiReasoning.refusesSampling(e.reason) -> temperature = null
                     searching && AiReasoning.refusesSearch(e.reason) -> {
                         searching = false
                         remarks += "Модель отказалась от поиска Google — ответ по её собственным знаниям"
@@ -129,9 +133,11 @@ class GeminiClient(private val base: String = "https://generativelanguage.google
     }
 
     private fun build(token: String, model: String, system: String, user: String, transport: AiTransport,
-                      thinks: GeminiThinking?, search: Boolean, temperature: Double,
+                      thinks: GeminiThinking?, search: Boolean, temperature: Double?,
                       stream: Boolean = false): Request {
-        val generation = JSONObject().put("temperature", temperature)
+        // No topP or topK ever: Gemini 3 fixes sampling, and newer models refuse those fields.
+        val generation = JSONObject()
+        if (temperature != null) generation.put("temperature", temperature)
         when (transport) {
             AiTransport.SCHEMA -> generation.put("responseMimeType", "application/json")
                 .put("responseSchema", AiProtocol.geminiSchema())

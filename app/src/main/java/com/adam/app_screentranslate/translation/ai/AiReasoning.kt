@@ -65,8 +65,11 @@ object AiReasoning {
     }
 
     /**
-     * Gemini 3 speaks thinkingLevel, and not every model knows every level; Gemini 2.5 speaks a
-     * token budget, and Pro refuses to switch thinking off, so its minimum is 128 tokens.
+     * Gemini speaks thinkingLevel, and not every model knows every level. Gemini 3 and later never
+     * get a token budget: Google stopped remapping it, and newer models answer it with a 400.
+     * Gemini 2.5 learned low/medium/high late, so the budget it was built for stays as a fallback
+     * rung; only a budget of zero switches 2.5 Flash thinking off, and Pro refuses that, so its
+     * minimum is the lowest level.
      */
     fun geminiLadder(model: String, effort: AiEffort): List<GeminiThinking?> {
         val version = gemini(model) ?: return listOf(null)
@@ -78,11 +81,26 @@ object AiReasoning {
             AiEffort.HIGH -> listOf(GeminiThinking(level = "high"), null)
         }
         return when (effort) {
-            AiEffort.MINIMAL -> listOf(GeminiThinking(budget = 0), GeminiThinking(budget = 128), null)
-            AiEffort.LOW -> listOf(GeminiThinking(budget = 1024), null)
-            AiEffort.MEDIUM -> listOf(GeminiThinking(budget = 8192), null)
-            AiEffort.HIGH -> listOf(GeminiThinking(budget = 24576), null)
+            AiEffort.MINIMAL -> listOf(GeminiThinking(budget = 0), GeminiThinking(level = "low"),
+                GeminiThinking(budget = 128), null)
+            AiEffort.LOW -> listOf(GeminiThinking(level = "low"), GeminiThinking(budget = 1024), null)
+            AiEffort.MEDIUM -> listOf(GeminiThinking(level = "medium"), GeminiThinking(budget = 8192), null)
+            AiEffort.HIGH -> listOf(GeminiThinking(level = "high"), GeminiThinking(budget = 24576), null)
         }
+    }
+
+    /**
+     * Whether a Gemini request may carry a temperature. Since Gemini 3.6 sampling is fixed and the
+     * field does nothing, and Google has announced that newer models will refuse it, so Gemini 3
+     * and every alias that points at a current model get none. Gemini 2.5 and other families on
+     * the same endpoint still honour it, and a translation is steadier for it.
+     */
+    fun geminiSampling(model: String): Boolean = (gemini(model) ?: 0.0) < 3.0
+
+    /** A 4xx that names a sampling parameter: the request can go again without temperature. */
+    fun refusesSampling(reason: String): Boolean {
+        val lower = reason.lowercase(Locale.ROOT)
+        return listOf("temperature", "top_p", "topp", "top_k", "topk", "sampling").any { lower.contains(it) }
     }
 
     /**

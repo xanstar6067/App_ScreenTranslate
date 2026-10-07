@@ -76,11 +76,25 @@ class GameResearchTest {
             AiReasoning.geminiLadder("gemini-3-flash-preview", AiEffort.MINIMAL))
         assertEquals(listOf(GeminiThinking(level = "medium"), GeminiThinking(level = "high"), null),
             AiReasoning.geminiLadder("gemini-3-pro-preview", AiEffort.MEDIUM))
-        // Pro refuses a zero budget; 128 is its floor.
-        assertEquals(listOf(GeminiThinking(budget = 0), GeminiThinking(budget = 128), null),
+        // Pro refuses a zero budget; the lowest level is its floor, 128 tokens behind it.
+        assertEquals(listOf(GeminiThinking(budget = 0), GeminiThinking(level = "low"), GeminiThinking(budget = 128), null),
             AiReasoning.geminiLadder("gemini-2.5-pro", AiEffort.MINIMAL))
-        assertEquals(listOf(GeminiThinking(budget = 24576), null), AiReasoning.geminiLadder("gemini-2.5-flash", AiEffort.HIGH))
+        assertEquals(listOf(GeminiThinking(level = "high"), GeminiThinking(budget = 24576), null),
+            AiReasoning.geminiLadder("gemini-2.5-flash", AiEffort.HIGH))
         assertEquals(listOf<GeminiThinking?>(null), AiReasoning.geminiLadder("gemini-2.0-flash", AiEffort.HIGH))
+    }
+
+    @Test fun geminiThreeAndLaterNeverGetBudgetOrTemperature() {
+        for (model in listOf("gemini-3-flash-preview", "gemini-3.6-flash", "gemini-3.8-flash", "gemini-flash-latest"))
+            for (effort in AiEffort.entries) {
+                assertTrue(AiReasoning.geminiLadder(model, effort).none { it?.budget != null })
+                assertFalse(AiReasoning.geminiSampling(model))
+            }
+        assertTrue(AiReasoning.geminiSampling("gemini-2.5-flash"))
+        assertTrue(AiReasoning.geminiSampling("gemma-3-27b-it"))
+        assertTrue(AiReasoning.refusesSampling("Invalid JSON payload: temperature is not supported for this model"))
+        assertTrue(AiReasoning.refusesSampling("Unknown name \"topP\""))
+        assertFalse(AiReasoning.refusesSampling("Thinking level is not supported"))
     }
 
     @Test fun refusalsAreRecognizedByWhatTheyName() {
