@@ -17,8 +17,11 @@ import androidx.compose.ui.unit.sp
 import com.adam.app_screentranslate.*
 import com.adam.app_screentranslate.R
 import com.adam.app_screentranslate.data.*
+import com.adam.app_screentranslate.game.GameDetection
 import com.adam.app_screentranslate.model.*
 import kotlinx.coroutines.launch
+import java.text.DateFormat
+import java.util.Date
 
 internal val Mint = Color(0xFF67E8C4)
 internal val Ink = Color(0xFF0E1B27)
@@ -30,7 +33,8 @@ fun HomeScreen(
     settings: AppSettings, session: SessionState, permissions: PermissionStatus, cache: TranslationCache,
     ai: AiPanel, games: GamesPanel, onSettings: (AppSettings) -> Unit, onToggle: (Boolean) -> Unit,
     onOverlay: () -> Unit, onCapture: () -> Unit, onNotifications: () -> Unit,
-    onBattery: () -> Unit, onUsageAccess: () -> Unit, onRefresh: () -> Unit
+    onBattery: () -> Unit, onUsageAccess: () -> Unit, onRefresh: () -> Unit,
+    lastGameDetection: GameDetection? = null
 ) {
     var tab by rememberSaveable { mutableIntStateOf(0) }
     var chooser by remember { mutableStateOf<String?>(null) }
@@ -87,8 +91,6 @@ fun HomeScreen(
                                 SessionPhase.PAUSED -> Color(0xFFFFD39B)
                                 else -> Muted
                             }, fontSize = 13.sp)
-                            if (settings.gameDetection && session.game != null)
-                                Text("Игра: ${session.game}", color = Muted, fontSize = 12.sp, modifier = Modifier.padding(top = 4.dp))
                         }
                         Switch(checked = session.phase in listOf(SessionPhase.ACTIVE, SessionPhase.STARTING),
                             enabled = session.phase != SessionPhase.STARTING, onCheckedChange = onToggle)
@@ -97,6 +99,25 @@ fun HomeScreen(
                         Spacer(Modifier.height(12.dp))
                         Text(session.message, color = Color(0xFFFFD39B), fontSize = 12.sp)
                     }
+                }
+                Heading("ИГРА ПРИ ПОСЛЕДНЕМ ЗАПРОСЕ")
+                Section {
+                    if (lastGameDetection == null) {
+                        Text("Запросов ещё не было", color = Muted, fontSize = 13.sp)
+                    } else {
+                        lastGameDetection.title?.let {
+                            Text(it, fontWeight = FontWeight.SemiBold, fontSize = 15.sp)
+                        }
+                        lastGameDetection.packageName?.let {
+                            Text(it, color = Muted, fontSize = 12.sp)
+                        }
+                        Text(lastGameDetection.status.description, color = Muted, fontSize = 13.sp)
+                        Text(DateFormat.getDateTimeInstance(DateFormat.SHORT, DateFormat.MEDIUM)
+                            .format(Date(lastGameDetection.checkedAt)), color = Muted, fontSize = 12.sp)
+                    }
+                    Spacer(Modifier.height(8.dp))
+                    Text("По статистике Android. Результат хранится до перезапуска приложения.",
+                        color = Muted, fontSize = 12.sp)
                 }
                 Heading("ЯЗЫКИ И ПЕРЕВОД")
                 Section {

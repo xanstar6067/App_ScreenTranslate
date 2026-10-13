@@ -14,11 +14,11 @@ data class InstalledApp(val packageName: String, val label: String)
 
 /**
  * Which app is on screen. MediaProjection hands over pixels and nothing about their owner, so the
- * answer comes from usage statistics: the last activity to be resumed. The overlay is a window, not
+ * answer is estimated from usage lifecycle events. The overlay is a window, not
  * an activity, so tapping the translate button does not move that answer to Lenslate itself.
  *
- * Only that one package name is ever taken from the statistics, only when a translation starts, and
- * only while game detection is on. Nothing else is read further and nothing is stored from it.
+ * Queries happen only when a translation starts and detection is on. Activity identities are used
+ * transiently to match pauses; only the latest result's package and label leave this object.
  */
 object ForegroundApp {
     /** Short first: a game resumed minutes ago is found without walking a day of events. */
@@ -38,26 +38,52 @@ object ForegroundApp {
     }
 
     /**
-     * The package of the app being translated, or null when it cannot be told or is not an app a
-     * profile makes sense for: Lenslate itself, the home screen, the system interface.
+     * A best-effort foreground estimate, with a reason when no game can be selected. Never fall back
+     * past a pause, screen-off or shutdown to an old game. Multiple resumed apps are ambiguous.
      */
-    fun current(context: Context): String? {
-        if (!hasAccess(context)) return null
-        val usage = context.getSystemService(UsageStatsManager::class.java) ?: return null
-        val resumed = if (Build.VERSION.SDK_INT >= 29) UsageEvents.Event.ACTIVITY_RESUMED
-            else @Suppress("DEPRECATION") UsageEvents.Event.MOVE_TO_FOREGROUND
+    @Suppress("DEPRECATION")
+    fun current(context: Context): GameDetection {
         val now = System.currentTimeMillis()
+        fun result(status: GameDetectionStatus, pkg: String? = null) =
+            GameDetection(now, status, pkg, pkg?.let { label(context, it).ifBlank { it } })
+        if (!hasAccess(context)) return result(GameDetectionStatus.NO_ACCESS)
+        val usage = context.getSystemService(UsageStatsManager::class.java)
+            ?: return result(GameDetectionStatus.UNAVAILABLE)
+        val resumed = if (Build.VERSION.SDK_INT >= 29) UsageEvents.Event.ACTIVITY_RESUMED
+            else UsageEvents.Event.MOVE_TO_FOREGROUND
+        val paused = if (Build.VERSION.SDK_INT >= 29) UsageEvents.Event.ACTIVITY_PAUSED
+            else UsageEvents.Event.MOVE_TO_BACKGROUND
+        var sawLifecycle = false
+        var available = false
         for (window in WINDOWS) {
             val events = usage.queryEvents(now - window, now) ?: continue
+            available = true
             val event = UsageEvents.Event()
-            var last: String? = null
+            val tracker = ForegroundTracker()
             while (events.hasNextEvent()) {
                 events.getNextEvent(event)
-                if (event.eventType == resumed) last = event.packageName
+                when {
+                    event.eventType == resumed -> event.packageName?.let { tracker.resumed(it, event.className) }
+                    event.eventType == paused || (Build.VERSION.SDK_INT >= 29 &&
+                        event.eventType == UsageEvents.Event.ACTIVITY_STOPPED) ->
+                        event.packageName?.let { tracker.backgrounded(it, event.className) }
+                    Build.VERSION.SDK_INT >= 28 && (event.eventType == UsageEvents.Event.SCREEN_NON_INTERACTIVE ||
+                        event.eventType == UsageEvents.Event.DEVICE_SHUTDOWN ||
+                        event.eventType == UsageEvents.Event.DEVICE_STARTUP) -> tracker.reset()
+                }
             }
-            if (last != null) return last.takeUnless { ignored(context, it) }
+            sawLifecycle = sawLifecycle || tracker.sawLifecycle
+            // A pause alone may belong to another activity: search farther for the missing resumes.
+            if (!tracker.hasEvidence) continue
+            if (tracker.ambiguous) return result(GameDetectionStatus.MULTIPLE_APPS)
+            val pkg = tracker.packageName ?: return result(GameDetectionStatus.BACKGROUND)
+            return result(if (ignored(context, pkg)) GameDetectionStatus.IGNORED else GameDetectionStatus.FOUND, pkg)
         }
-        return null
+        return result(when {
+            !available -> GameDetectionStatus.UNAVAILABLE
+            sawLifecycle -> GameDetectionStatus.BACKGROUND
+            else -> GameDetectionStatus.NO_EVENTS
+        })
     }
 
     fun label(context: Context, pkg: String): String = try {

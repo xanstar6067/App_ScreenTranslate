@@ -22,6 +22,8 @@ import com.adam.app_screentranslate.ocr.OCRManager
 import com.adam.app_screentranslate.overlay.OverlayController
 import com.adam.app_screentranslate.translation.TranslationManager
 import com.adam.app_screentranslate.game.ForegroundApp
+import com.adam.app_screentranslate.game.GameDetection
+import com.adam.app_screentranslate.game.GameDetectionStatus
 import com.adam.app_screentranslate.translation.ai.AiEngines
 import com.adam.app_screentranslate.translation.ai.AiTranslator
 import kotlinx.coroutines.*
@@ -153,12 +155,19 @@ class TranslationService : Service() {
         processing = scope.launch {
             previous?.join()
             // Finding the game runs beside the capture; its languages are needed only once recognition starts.
-            val detecting = async(Dispatchers.IO) { detectGame(base) }
+            val detecting = async(Dispatchers.IO) {
+                val detected = detectGame(base)
+                withContext(Dispatchers.Main.immediate) {
+                    if (frameGeneration == generation) app.lastGameDetection.value = detected.report
+                }
+                detected.context
+            }
             val visible = mutableListOf<ScreenTextBlock>()
             try {
                 val bitmap = capture?.capture() ?: error("No projection")
                 overlay?.state(ControlState.PROCESSING)
-                val game = detecting.await()
+                // Waiting for detection is cancellable too: the already captured frame must be freed.
+                val game = try { detecting.await() } catch (e: Throwable) { bitmap.recycle(); throw e }
                 val settings = base.forGame(game?.profile)
                 app.session.value = app.session.value.copy(game = game?.profile?.title)
                 val frameWidth = bitmap.width
@@ -243,13 +252,21 @@ class TranslationService : Service() {
      * off, usage statistics are not touched at all. Nothing here can fail a translation: any problem
      * just means a screen translated without a game.
      */
-    private suspend fun detectGame(settings: AppSettings): GameContext? {
-        if (!settings.gameDetection) return null
+    private data class DetectedGame(val report: GameDetection, val context: GameContext? = null)
+
+    private suspend fun detectGame(settings: AppSettings): DetectedGame {
+        var report = GameDetection(System.currentTimeMillis(), GameDetectionStatus.DISABLED)
+        if (!settings.gameDetection) return DetectedGame(report)
         return try {
-            val pkg = ForegroundApp.current(this) ?: return null
-            val profile = app.games.touch(pkg, ForegroundApp.label(this, pkg))
-            if (profile.enabled) GameContext(profile, app.games.glossary(pkg)) else null
-        } catch (e: CancellationException) { throw e } catch (_: Exception) { null }
+            report = ForegroundApp.current(this)
+            if (report.status != GameDetectionStatus.FOUND) return DetectedGame(report)
+            val pkg = requireNotNull(report.packageName)
+            val profile = app.games.touch(pkg, report.title.orEmpty())
+            report = report.copy(title = profile.title,
+                status = if (profile.enabled) GameDetectionStatus.FOUND else GameDetectionStatus.PROFILE_DISABLED)
+            DetectedGame(report, if (profile.enabled) GameContext(profile, app.games.glossary(pkg)) else null)
+        } catch (e: CancellationException) { throw e }
+        catch (_: Exception) { DetectedGame(report.copy(status = GameDetectionStatus.ERROR)) }
     }
 
     private fun invalidateFrame() {

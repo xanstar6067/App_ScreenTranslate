@@ -1,5 +1,6 @@
 package com.adam.app_screentranslate
 import android.app.Application
+import com.adam.app_screentranslate.game.GameDetection
 import com.adam.app_screentranslate.data.AiConfigManager
 import com.adam.app_screentranslate.data.GameStore
 import com.adam.app_screentranslate.data.SettingsManager
@@ -13,4 +14,6 @@ class TranslatorApp : Application() {
     val cache by lazy { TranslationCache(this) }
     val games by lazy { GameStore(this) }
     val session = MutableStateFlow(SessionState())
+    // Kept apart from the capture session so stopping the service does not erase the latest attempt.
+    val lastGameDetection = MutableStateFlow<GameDetection?>(null)
 }

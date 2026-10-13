@@ -65,12 +65,14 @@ class MainActivity : ComponentActivity() {
         setContent {
             val settings by app.settings.settings.collectAsState()
             val session by app.session.collectAsState()
+            val lastGameDetection by app.lastGameDetection.collectAsState()
             val permissions = remember(refresh, session.phase) { readPermissions() }
             // Requests to the AI provider outlive recomposition, so the panels hold the activity's own scope.
             val ai = remember { AiPanel(app.ai, lifecycleScope) }
             val games = remember { GamesPanel(app.games, app, lifecycleScope, app.ai, ai::engine) }
             App_ScreenTranslateTheme {
                 HomeScreen(settings, session, permissions, app.cache, ai, games,
+                    lastGameDetection = lastGameDetection,
                     onSettings = app.settings::update, onToggle = { enable ->
                         if (enable) enableTranslator() else {
                             stopService(Intent(this, TranslationService::class.java))
