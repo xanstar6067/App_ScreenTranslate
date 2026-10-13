@@ -18,5 +18,7 @@ data class GameDetection(
     val checkedAt: Long,
     val status: GameDetectionStatus,
     val packageName: String? = null,
-    val title: String? = null
+    val title: String? = null,
+    /** Installed app's label, kept apart from a player's custom profile name. */
+    val appLabel: String? = null
 )

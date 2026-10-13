@@ -105,12 +105,26 @@ fun HomeScreen(
                     if (lastGameDetection == null) {
                         Text("Запросов ещё не было", color = Muted, fontSize = 13.sp)
                     } else {
-                        lastGameDetection.title?.let {
-                            Text(it, fontWeight = FontWeight.SemiBold, fontSize = 15.sp)
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            lastGameDetection.packageName?.let {
+                                ApplicationIcon(it)
+                                Spacer(Modifier.width(12.dp))
+                            }
+                            Column(Modifier.weight(1f)) {
+                                val appName = lastGameDetection.appLabel ?: lastGameDetection.title
+                                    ?: lastGameDetection.packageName
+                                appName?.let {
+                                    Text(it, fontWeight = FontWeight.SemiBold, fontSize = 15.sp)
+                                }
+                                lastGameDetection.title?.takeIf { it != appName }?.let {
+                                    Text("Профиль: $it", color = Muted, fontSize = 12.sp)
+                                }
+                                lastGameDetection.packageName?.let {
+                                    Text(it, color = Muted, fontSize = 12.sp)
+                                }
+                            }
                         }
-                        lastGameDetection.packageName?.let {
-                            Text(it, color = Muted, fontSize = 12.sp)
-                        }
+                        Spacer(Modifier.height(8.dp))
                         Text(lastGameDetection.status.description, color = Muted, fontSize = 13.sp)
                         Text(DateFormat.getDateTimeInstance(DateFormat.SHORT, DateFormat.MEDIUM)
                             .format(Date(lastGameDetection.checkedAt)), color = Muted, fontSize = 12.sp)

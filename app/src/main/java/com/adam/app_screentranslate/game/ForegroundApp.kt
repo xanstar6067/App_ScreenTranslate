@@ -44,8 +44,10 @@ object ForegroundApp {
     @Suppress("DEPRECATION")
     fun current(context: Context): GameDetection {
         val now = System.currentTimeMillis()
-        fun result(status: GameDetectionStatus, pkg: String? = null) =
-            GameDetection(now, status, pkg, pkg?.let { label(context, it).ifBlank { it } })
+        fun result(status: GameDetectionStatus, pkg: String? = null): GameDetection {
+            val appLabel = pkg?.let { label(context, it).takeIf(String::isNotBlank) }
+            return GameDetection(now, status, pkg, appLabel ?: pkg, appLabel)
+        }
         if (!hasAccess(context)) return result(GameDetectionStatus.NO_ACCESS)
         val usage = context.getSystemService(UsageStatsManager::class.java)
             ?: return result(GameDetectionStatus.UNAVAILABLE)
